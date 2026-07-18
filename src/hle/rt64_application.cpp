@@ -16,6 +16,10 @@
 #   include "res/bluenoise/LDR_64_64_64_RGB1.h"
 #endif
 
+#if defined(RT64_XR_SUPPORT) && defined(_WIN64)
+#   include "plume_d3d12.h"
+#endif
+
 //#define LOG_DISPLAY_LISTS
 
 namespace plume {
@@ -332,6 +336,29 @@ namespace RT64 {
         }
 
         swapChain = presentGraphicsWorker->commandQueue->createSwapChain(swapChainDesc);
+
+#   ifdef RT64_XR_SUPPORT
+        // VR opt-in: bring up the OpenXR session bound to the presentation
+        // queue's device. Requires the swap chain's queue to exist, hence this
+        // spot. Failures log and leave the application running flat.
+        if (xrEnabled) {
+#       if defined(_WIN64)
+            if (chosenGraphicsAPI == UserConfiguration::GraphicsAPI::D3D12) {
+                xrContext = std::make_unique<XRContext>();
+                plume::D3D12Device *d3d12Device = static_cast<plume::D3D12Device *>(device.get());
+                plume::D3D12CommandQueue *d3d12Queue = static_cast<plume::D3D12CommandQueue *>(presentGraphicsWorker->commandQueue.get());
+                if (!xrContext->initInstance() || !xrContext->beginSessionD3D12(d3d12Device->d3d, d3d12Queue->d3d)) {
+                    xrContext.reset();
+                }
+            }
+            else {
+                fprintf(stderr, "XR: VR currently requires the D3D12 graphics API; running flat.\n");
+            }
+#       else
+            fprintf(stderr, "XR: VR is currently only supported on Windows/D3D12; running flat.\n");
+#       endif
+        }
+#   endif
 
         // Before configuring multisampling, make sure the device actually supports it for the formats we'll use. If it doesn't, turn off antialiasing in the configuration.
         const RenderSampleCounts colorSampleCounts = device->getSampleCountsSupported(RenderTarget::colorBufferFormat(usesHDR));
@@ -678,6 +705,11 @@ namespace RT64 {
         if (deinitHook != nullptr) {
             deinitHook();
         }
+
+#   ifdef RT64_XR_SUPPORT
+        // Joins the XR frame thread before the device it is bound to goes away.
+        xrContext.reset();
+#   endif
 
         drawDataUploader.reset();
         transformsUploader.reset();

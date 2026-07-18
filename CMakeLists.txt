@@ -13,6 +13,8 @@ option(RT64_STATIC "Build RT64 as a static library" OFF)
 
 option(RT64_SDL_WINDOW_VULKAN "Build RT64 to expect an SDL Window outside of Windows" OFF)
 
+option(RT64_XR_SUPPORT "Build RT64 with OpenXR support (requires an openxr_loader target)" OFF)
+
 if (NOT ${RT64_STATIC})
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
@@ -471,6 +473,16 @@ if (WIN32)
         ${PROJECT_SOURCE_DIR}/src/contrib/dxc/lib/x64/dxcompiler.lib)
 
     target_include_directories(rt64 PRIVATE ${zstd_SOURCE_DIR}/lib)
+endif()
+
+# OpenXR support. The openxr_loader target is expected to be provided by the
+# parent project (e.g. via FetchContent of the Khronos OpenXR-SDK).
+if (RT64_XR_SUPPORT)
+    target_sources(rt64 PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/xr/rt64_xr_context.cpp"
+    )
+    target_compile_definitions(rt64 PUBLIC RT64_XR_SUPPORT)
+    target_link_libraries(rt64 openxr_loader)
 endif()
 
 target_link_directories(rt64 PRIVATE ${PROJECT_SOURCE_DIR}/src/contrib/dxc)

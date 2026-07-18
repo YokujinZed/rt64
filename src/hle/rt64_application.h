@@ -34,6 +34,10 @@
 #   include "script/rt64_script.h"
 #endif
 
+#ifdef RT64_XR_SUPPORT
+#   include "xr/rt64_xr_context.h"
+#endif
+
 namespace RT64 {
     struct ApplicationConfiguration {
         std::filesystem::path appId = "rt64";
@@ -143,6 +147,13 @@ namespace RT64 {
         RaytracingConfiguration rtConfig;
         std::unique_ptr<RaytracingShaderCache> rtShaderCache;
         Texture blueNoiseTexture;
+#   endif
+
+#   ifdef RT64_XR_SUPPORT
+        // Hosts opt in by setting this before setup(). XR failures are never
+        // fatal: xrContext stays null and the application runs flat.
+        bool xrEnabled = false;
+        std::unique_ptr<XRContext> xrContext;
 #   endif
 
 #   if SCRIPT_ENABLED
