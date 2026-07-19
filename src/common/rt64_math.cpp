@@ -211,6 +211,11 @@ namespace RT64 {
     }
 
     hlslpp::float4x4 matrixPerspectiveTanFov(float tanLeft, float tanRight, float tanDown, float tanUp, float nearPlane, float farPlane) {
+        // NOTE: OpenGL-convention (clip z in [-1, 1]). The RSP compute pass
+        // (RSPProcessCS.hlsl) uses the N64 clip convention, so feeding this
+        // straight into the projection slot culls perspective geometry. Kept
+        // for reference; stereo uses a view-offset on the game's own projection
+        // instead (see rt64_projection_processor.cpp).
         // Row-vector asymmetric perspective (transpose of the column-vector
         // glFrustum form), consistent with the extractors above:
         // nearPlaneFromProj/farPlaneFromProj/fovFromProj round-trip this matrix.
