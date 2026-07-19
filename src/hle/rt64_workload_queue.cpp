@@ -4,9 +4,15 @@
 
 #include "rt64_workload_queue.h"
 
+#include <cstdlib>
+
 #include "common/rt64_thread.h"
 
 #include "rt64_present_queue.h"
+
+#ifdef RT64_XR_SUPPORT
+#   include "xr/rt64_xr_context.h"
+#endif
 
 #define ENABLE_HIGH_RESOLUTION_RENDERER 1
 
@@ -292,7 +298,8 @@ namespace RT64 {
     void WorkloadQueue::threadRenderFrame(GameFrame &curFrame, const GameFrame &prevFrame, const WorkloadConfiguration &workloadConfig,
         const DebuggerRenderer &debuggerRenderer, const DebuggerCamera &debuggerCamera, float curFrameWeight, float prevFrameWeight,
         float deltaTimeMs, RenderTargetKey overrideTargetKey, int32_t overrideTargetFbPairIndex, RenderTarget *overrideTarget,
-        uint32_t overrideTargetModifier, bool uploadVelocity, bool uploadExtras, bool interpolateTiles, bool interpolateLookAts)
+        uint32_t overrideTargetModifier, bool uploadVelocity, bool uploadExtras, bool interpolateTiles, bool interpolateLookAts,
+        const EyeRenderParams &eyeParams)
     {
 #   if ENABLE_HIGH_RESOLUTION_RENDERER
         std::scoped_lock<std::mutex> managerLock(ext.sharedResources->workloadMutex);
@@ -303,7 +310,7 @@ namespace RT64 {
         rendererCPUProfiler.start();
 
         const bool aspectRatioAdjustment = (abs(workloadConfig.aspectRatioScale - 1.0f) > 1e-6f);
-        const bool processProjections = aspectRatioAdjustment || prevFrame.matched|| curFrame.isDebuggerCameraEnabled(*this);
+        const bool processProjections = aspectRatioAdjustment || prevFrame.matched|| curFrame.isDebuggerCameraEnabled(*this) || eyeParams.enabled;
         bool uploadProjections = false;
         if (processProjections) {
             ProjectionProcessor::ProcessParams projParams;
@@ -314,6 +321,14 @@ namespace RT64 {
             projParams.curFrameWeight = curFrameWeight;
             projParams.prevFrameWeight = prevFrameWeight;
             projParams.aspectRatioScale = workloadConfig.aspectRatioScale;
+            projParams.eyeOverrideEnabled = eyeParams.enabled;
+            if (eyeParams.enabled) {
+                projParams.eyeViewOffset = eyeParams.viewOffset;
+                projParams.eyeTanLeft = eyeParams.tanLeft;
+                projParams.eyeTanRight = eyeParams.tanRight;
+                projParams.eyeTanDown = eyeParams.tanDown;
+                projParams.eyeTanUp = eyeParams.tanUp;
+            }
             projectionProcessor.process(projParams);
             projectionProcessor.upload(projParams);
             uploadProjections = true;
@@ -881,6 +896,15 @@ namespace RT64 {
     void WorkloadQueue::renderThreadLoop() {
         Thread::setCurrentThreadName("RT64 Workload");
 
+#   ifdef RT64_XR_SUPPORT
+        // Stereo bring-up aid (temporary): render the flat window through one
+        // eye's frustum. Unset in normal operation.
+        int debugEyeIndex = -1;
+        if (const char *debugEye = std::getenv("RT64_XR_DEBUG_EYE"); debugEye != nullptr) {
+            debugEyeIndex = (debugEye[0] == '1') ? 1 : 0;
+        }
+#   endif
+
         WorkloadConfiguration workloadConfig;
         int64_t logicalTicks = 0;
         int64_t displayTicks = 0;
@@ -1116,9 +1140,32 @@ namespace RT64 {
                         ext.workloadExtrasUploader->submit(ext.workloadGraphicsWorker, { extrasUpload });
                     }
 
+                    EyeRenderParams eyeParams;
+#           ifdef RT64_XR_SUPPORT
+                    // Stereo bring-up aid: RT64_XR_DEBUG_EYE=0|1 renders the
+                    // flat window through that eye's frustum so the override is
+                    // verifiable on the monitor before any XR compositing.
+                    if ((ext.xrContext != nullptr) && (debugEyeIndex >= 0)) {
+                        const XREyeParams xrEye = ext.xrContext->buildEyeParams(uint32_t(debugEyeIndex));
+                        if (xrEye.valid) {
+                            eyeParams.enabled = true;
+                            eyeParams.viewOffset = hlslpp::float4x4(
+                                xrEye.viewOffset[0][0], xrEye.viewOffset[0][1], xrEye.viewOffset[0][2], xrEye.viewOffset[0][3],
+                                xrEye.viewOffset[1][0], xrEye.viewOffset[1][1], xrEye.viewOffset[1][2], xrEye.viewOffset[1][3],
+                                xrEye.viewOffset[2][0], xrEye.viewOffset[2][1], xrEye.viewOffset[2][2], xrEye.viewOffset[2][3],
+                                xrEye.viewOffset[3][0], xrEye.viewOffset[3][1], xrEye.viewOffset[3][2], xrEye.viewOffset[3][3]);
+                            eyeParams.tanLeft = xrEye.tanLeft;
+                            eyeParams.tanRight = xrEye.tanRight;
+                            eyeParams.tanDown = xrEye.tanDown;
+                            eyeParams.tanUp = xrEye.tanUp;
+                        }
+                    }
+#           endif
+
                     int64_t renderTimeMicro = workloadTimer.elapsedMicroseconds();
                     threadRenderFrame(curFrame, prevFrame, workloadConfig, workload.debuggerRenderer, workload.debuggerCamera, curFrameWeight, prevFrameWeight, deltaTimeMs,
-                        interpolationTargetKey, interpolationTargetFbPairIndex, overrideTarget, overrideModifier, velocityUploaderUsed, uploadExtras, tileInterpolationUsed, lookAtInterpolationUsed);
+                        interpolationTargetKey, interpolationTargetFbPairIndex, overrideTarget, overrideModifier, velocityUploaderUsed, uploadExtras, tileInterpolationUsed, lookAtInterpolationUsed,
+                        eyeParams);
 
                     // Add total time the frame took to render.
                     renderTimeTotalMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;

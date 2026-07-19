@@ -21,6 +21,16 @@ namespace RT64 {
             float curFrameWeight = 1.0f;
             float prevFrameWeight = 0.0f;
             float aspectRatioScale = 1.0f;
+            // Stereo eye override (VR): when enabled, perspective scenes get
+            // their view right-multiplied by eyeViewOffset and their projection
+            // replaced by an asymmetric frustum built from the tangent
+            // half-angles (near/far preserved from the game's projection).
+            bool eyeOverrideEnabled = false;
+            hlslpp::float4x4 eyeViewOffset;
+            float eyeTanLeft = -1.0f;
+            float eyeTanRight = 1.0f;
+            float eyeTanDown = -1.0f;
+            float eyeTanUp = 1.0f;
         };
 
         ProjectionProcessor();

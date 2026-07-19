@@ -30,6 +30,7 @@ namespace RT64 {
     hlslpp::float4x4 lerpMatrix(const hlslpp::float4x4 &a, const hlslpp::float4x4 &b, float t);
     hlslpp::float4x4 lerpMatrix3x3(const hlslpp::float4x4 &a, const hlslpp::float4x4 &b, float t);
     hlslpp::float4x4 lerpMatrixComponents(const hlslpp::float4x4 &a, const hlslpp::float4x4 &b, bool linear, bool angular, bool perspective, float t);
+    hlslpp::float4x4 matrixPerspectiveTanFov(float tanLeft, float tanRight, float tanDown, float tanUp, float nearPlane, float farPlane);
     float nearPlaneFromProj(const hlslpp::float4x4 &m);
     float farPlaneFromProj(const hlslpp::float4x4 &m);
     float fovFromProj(const hlslpp::float4x4 &m);

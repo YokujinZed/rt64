@@ -175,6 +175,72 @@ namespace RT64 {
         recenterRequested = true;
     }
 
+    void XRContext::setStereoEnabled(bool enabled) {
+        stereoEnabled = enabled;
+    }
+
+    bool XRContext::isStereoEnabled() const {
+        return stereoEnabled && sessionRunning;
+    }
+
+    void XRContext::setUnitsPerMeter(float units) {
+        unitsPerMeter = units;
+    }
+
+    XREyeParams XRContext::buildEyeParams(uint32_t eyeIndex) const {
+        XREyeParams params;
+        if ((eyeIndex > 1) || !isStereoEnabled()) {
+            return params;
+        }
+
+        XrView view = { XR_TYPE_VIEW };
+        {
+            const std::lock_guard<std::mutex> lock(eyeViewsMutex);
+            if (!eyeViewsValid) {
+                return params;
+            }
+            view = eyeViews[eyeIndex];
+        }
+
+        // Head-to-eye inverse as a row-vector matrix (v' = v * M, translation
+        // in row 3). With column-convention rotation R from the quaternion and
+        // head-relative eye position t: rows 0-2 = rows of R, row 3 = -t * R.
+        const XrQuaternionf &q = view.pose.orientation;
+        const float scale = unitsPerMeter.load();
+        const float tx = view.pose.position.x * scale;
+        const float ty = view.pose.position.y * scale;
+        const float tz = view.pose.position.z * scale;
+
+        float r[3][3];
+        r[0][0] = 1.0f - 2.0f * (q.y * q.y + q.z * q.z);
+        r[0][1] = 2.0f * (q.x * q.y - q.w * q.z);
+        r[0][2] = 2.0f * (q.x * q.z + q.w * q.y);
+        r[1][0] = 2.0f * (q.x * q.y + q.w * q.z);
+        r[1][1] = 1.0f - 2.0f * (q.x * q.x + q.z * q.z);
+        r[1][2] = 2.0f * (q.y * q.z - q.w * q.x);
+        r[2][0] = 2.0f * (q.x * q.z - q.w * q.y);
+        r[2][1] = 2.0f * (q.y * q.z + q.w * q.x);
+        r[2][2] = 1.0f - 2.0f * (q.x * q.x + q.y * q.y);
+
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                params.viewOffset[i][j] = r[i][j];
+            }
+            params.viewOffset[i][3] = 0.0f;
+        }
+        for (int j = 0; j < 3; j++) {
+            params.viewOffset[3][j] = -(tx * r[0][j] + ty * r[1][j] + tz * r[2][j]);
+        }
+        params.viewOffset[3][3] = 1.0f;
+
+        params.tanLeft = std::tan(view.fov.angleLeft);
+        params.tanRight = std::tan(view.fov.angleRight);
+        params.tanDown = std::tan(view.fov.angleDown);
+        params.tanUp = std::tan(view.fov.angleUp);
+        params.valid = true;
+        return params;
+    }
+
     void XRContext::recenterQuadSpace(XrTime time) {
         XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
         if (XR_FAILED(xrLocateSpace(viewSpace, baseSpace, time, &location))) {
@@ -611,6 +677,24 @@ namespace RT64 {
                 tickCounter++;
             }
             tickCondition.notify_all();
+
+            // Refresh the head-relative eye views for stereo rendering.
+            if (stereoEnabled) {
+                XrViewLocateInfo locateInfo = { XR_TYPE_VIEW_LOCATE_INFO };
+                locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+                locateInfo.displayTime = frameState.predictedDisplayTime;
+                locateInfo.space = viewSpace;
+                XrViewState viewState = { XR_TYPE_VIEW_STATE };
+                XrView views[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+                uint32_t viewCount = 0;
+                if (XR_SUCCEEDED(xrLocateViews(session, &locateInfo, &viewState, 2, &viewCount, views)) && (viewCount == 2)) {
+                    constexpr XrViewStateFlags required = XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT;
+                    const std::lock_guard<std::mutex> lock(eyeViewsMutex);
+                    eyeViewsValid = (viewState.viewStateFlags & required) == required;
+                    eyeViews[0] = views[0];
+                    eyeViews[1] = views[1];
+                }
+            }
 
             XrFrameBeginInfo beginInfo = { XR_TYPE_FRAME_BEGIN_INFO };
             if (XR_FAILED(xrBeginFrame(session, &beginInfo))) {

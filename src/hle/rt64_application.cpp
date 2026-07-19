@@ -434,6 +434,9 @@ namespace RT64 {
         workloadExt.textureCache = textureCache.get();
         workloadExt.shaderLibrary = shaderLibrary.get();
         workloadExt.createdGraphicsAPI = chosenGraphicsAPI;
+#   ifdef RT64_XR_SUPPORT
+        workloadExt.xrContext = xrContext.get();
+#   endif
 #   if RT_ENABLED
         workloadExt.rtShaderCache = rtShaderCache.get();
         workloadExt.blueNoiseTexture = blueNoiseTexture.texture.get();

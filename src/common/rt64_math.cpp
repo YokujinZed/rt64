@@ -210,6 +210,20 @@ namespace RT64 {
         return std::max(2.0f * atanf(-m[2][3] / m[1][1]), 1e-2f);
     }
 
+    hlslpp::float4x4 matrixPerspectiveTanFov(float tanLeft, float tanRight, float tanDown, float tanUp, float nearPlane, float farPlane) {
+        // Row-vector asymmetric perspective (transpose of the column-vector
+        // glFrustum form), consistent with the extractors above:
+        // nearPlaneFromProj/farPlaneFromProj/fovFromProj round-trip this matrix.
+        const float invWidth = 1.0f / (tanRight - tanLeft);
+        const float invHeight = 1.0f / (tanUp - tanDown);
+        const float invDepth = 1.0f / (farPlane - nearPlane);
+        return hlslpp::float4x4(
+            2.0f * invWidth, 0.0f, 0.0f, 0.0f,
+            0.0f, 2.0f * invHeight, 0.0f, 0.0f,
+            (tanRight + tanLeft) * invWidth, (tanUp + tanDown) * invHeight, -(farPlane + nearPlane) * invDepth, -1.0f,
+            0.0f, 0.0f, -2.0f * farPlane * nearPlane * invDepth, 0.0f);
+    }
+
     float pseudoRandom(uint32_t &s) {
         s = 1664525u * s + 1013904223u;
         return float(s & 0x00FFFFFF) / float(0x01000000);

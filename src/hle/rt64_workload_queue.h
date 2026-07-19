@@ -27,6 +27,9 @@
 
 namespace RT64 {
     struct PresentQueue;
+#ifdef RT64_XR_SUPPORT
+    struct XRContext;
+#endif
 
     struct WorkloadQueue {
         struct External {
@@ -45,6 +48,20 @@ namespace RT64 {
             const RenderTexture *blueNoiseTexture = nullptr;
             RaytracingShaderCache *rtShaderCache = nullptr;
 #       endif
+#       ifdef RT64_XR_SUPPORT
+            XRContext *xrContext = nullptr;
+#       endif
+        };
+
+        // Per-eye stereo parameters for one render pass (VR). Generic — the XR
+        // module converts headset poses/frustums into these.
+        struct EyeRenderParams {
+            bool enabled = false;
+            hlslpp::float4x4 viewOffset;
+            float tanLeft = -1.0f;
+            float tanRight = 1.0f;
+            float tanDown = -1.0f;
+            float tanUp = 1.0f;
         };
 
         struct WorkloadConfiguration {
@@ -116,7 +133,8 @@ namespace RT64 {
         void threadRenderFrame(GameFrame &curFrame, const GameFrame &prevFrame, const WorkloadConfiguration &workloadConfig,
             const DebuggerRenderer &debuggerRenderer, const DebuggerCamera &debuggerCamera, float curFrameWeight, float prevFrameWeight,
             float deltaTimeMs, RenderTargetKey overrideTargetKey, int32_t overrideTargetFbPairIndex, RenderTarget *overrideTarget,
-            uint32_t overrideTargetModifier, bool uploadVelocity, bool uploadExtras, bool interpolateTiles, bool interpolateLookAts);
+            uint32_t overrideTargetModifier, bool uploadVelocity, bool uploadExtras, bool interpolateTiles, bool interpolateLookAts,
+            const EyeRenderParams &eyeParams);
 
         void threadAdvanceBarrier();
         void threadAdvanceWorkloadId(uint64_t newWorkloadId);

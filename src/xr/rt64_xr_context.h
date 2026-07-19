@@ -53,6 +53,18 @@ namespace RT64 {
         uint64_t sampleCount = 0;
     };
 
+    // Per-eye stereo parameters in renderer-friendly form: a row-vector
+    // head-to-eye view offset (translation already in game units) and the
+    // frustum tangent half-angles. No XR types so render code stays generic.
+    struct XREyeParams {
+        bool valid = false;
+        float viewOffset[4][4] = {};
+        float tanLeft = -1.0f;
+        float tanRight = 1.0f;
+        float tanDown = -1.0f;
+        float tanUp = 1.0f;
+    };
+
     struct XRContext {
         XRContext() = default;
         ~XRContext();
@@ -107,6 +119,14 @@ namespace RT64 {
         // Queue a recenter of the cinema quad to the current view (also bound
         // to left-stick-click on the controllers).
         void requestRecenter();
+
+        // Stereo (M3). Eye views are located head-relative (VIEW space), so
+        // buildEyeParams yields pure stereo offsets — head tracking composes
+        // separately in a later milestone.
+        void setStereoEnabled(bool enabled);
+        bool isStereoEnabled() const;
+        void setUnitsPerMeter(float units);
+        XREyeParams buildEyeParams(uint32_t eyeIndex) const; // 0 = left, 1 = right
 
     private:
         void frameLoop();
@@ -167,6 +187,13 @@ namespace RT64 {
 
         std::atomic<bool> recenterRequested{ false };
         bool prevRecenterClick = false;
+
+        // Head-relative eye views, refreshed once per XR frame.
+        mutable std::mutex eyeViewsMutex;
+        XrView eyeViews[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+        bool eyeViewsValid = false;
+        std::atomic<bool> stereoEnabled{ false };
+        std::atomic<float> unitsPerMeter{ 100.0f };
 
         std::thread frameThread;
         std::atomic<bool> quitRequested{ false };

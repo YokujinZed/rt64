@@ -140,6 +140,22 @@ namespace RT64 {
                 prevProjTransform = projMatrix;
             }
 
+            // Stereo eye override (VR): applied after interpolation so the eye
+            // offset rides on the smooth camera instead of blending against
+            // game-camera history. The scene's own near/far planes carry over
+            // into the eye frustum, keeping depth/fog/RT consistent.
+            if (p.eyeOverrideEnabled && (proj.type == Projection::Type::Perspective) && !workload.debuggerCamera.enabled) {
+                const float nearPlane = nearPlaneFromProj(projMatrix);
+                const float farPlane = farPlaneFromProj(projMatrix);
+                viewMatrix = hlslpp::mul(viewMatrix, p.eyeViewOffset);
+                projMatrix = matrixPerspectiveTanFov(p.eyeTanLeft, p.eyeTanRight, p.eyeTanDown, p.eyeTanUp, nearPlane, farPlane);
+
+                const float prevNearPlane = nearPlaneFromProj(prevProjTransform);
+                const float prevFarPlane = farPlaneFromProj(prevProjTransform);
+                prevViewTransform = hlslpp::mul(prevViewTransform, p.eyeViewOffset);
+                prevProjTransform = matrixPerspectiveTanFov(p.eyeTanLeft, p.eyeTanRight, p.eyeTanDown, p.eyeTanUp, prevNearPlane, prevFarPlane);
+            }
+
             viewProjMatrix = hlslpp::mul(viewMatrix, projMatrix);
 
             interop::float4x4 &prevViewProjTransform = drawData.prevViewProjTransforms[proj.transformsIndex];
