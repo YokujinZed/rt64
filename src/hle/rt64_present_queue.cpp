@@ -392,7 +392,11 @@ namespace RT64 {
                             }
                         }
 
-                        if ((rightEyeTarget != nullptr) && (rightEyeTarget->width == colorTarget->width) && (rightEyeTarget->height == colorTarget->height)) {
+                        bool stereoTexturesReady = false;
+                        RenderTexture *leftTexture = nullptr;
+                        RenderTexture *rightTexture = nullptr;
+                        if ((rightEyeTarget != nullptr) && !rightEyeTarget->isEmpty() && !colorTarget->isEmpty() &&
+                            (rightEyeTarget->width == colorTarget->width) && (rightEyeTarget->height == colorTarget->height)) {
                             // Left rides the normal path; it was already resolved
                             // for the VI blit unless the downsampled route ran.
                             if (colorTarget->downsampleMultiplier > 1) {
@@ -400,8 +404,25 @@ namespace RT64 {
                             }
                             rightEyeTarget->resolveTarget(ext.presentGraphicsWorker, ext.shaderLibrary);
 
-                            RenderTexture *leftTexture = colorTarget->getResolvedTexture();
-                            RenderTexture *rightTexture = rightEyeTarget->getResolvedTexture();
+                            leftTexture = colorTarget->getResolvedTexture();
+                            rightTexture = rightEyeTarget->getResolvedTexture();
+                            // Guard every pointer the raw D3D12 copy dereferences.
+                            const bool haveNative = (leftTexture != nullptr) && (rightTexture != nullptr) &&
+                                (static_cast<plume::D3D12Texture *>(leftTexture)->d3d != nullptr) &&
+                                (static_cast<plume::D3D12Texture *>(rightTexture)->d3d != nullptr);
+                            if (haveNative) {
+                                stereoTexturesReady = true;
+                            }
+                            else {
+                                static bool loggedNull = false;
+                                if (!loggedNull) {
+                                    fprintf(stderr, "XR: stereo skip, eye texture not ready (left=%p right=%p); cinema fallback.\n", (void *)leftTexture, (void *)rightTexture);
+                                    loggedNull = true;
+                                }
+                            }
+                        }
+
+                        if (stereoTexturesReady) {
                             commandList->barriers(RenderBarrierStage::COPY, {
                                 RenderTextureBarrier(leftTexture, RenderTextureLayout::COPY_SOURCE),
                                 RenderTextureBarrier(rightTexture, RenderTextureLayout::COPY_SOURCE),
