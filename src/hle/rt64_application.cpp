@@ -449,6 +449,14 @@ namespace RT64 {
         presentExt.sharedResources = sharedQueueResources.get();
         presentExt.shaderLibrary = shaderLibrary.get();
         presentExt.createdGraphicsAPI = chosenGraphicsAPI;
+#   ifdef RT64_XR_SUPPORT
+        presentExt.xrContext = xrContext.get();
+        if (xrContext != nullptr) {
+            // The XR loop paces presentation; the window mirror must never
+            // throttle it through vsync backpressure.
+            swapChain->setVsyncEnabled(false);
+        }
+#   endif
         presentQueue->setup(presentExt);
 
         // Configure the state to use all the created components.

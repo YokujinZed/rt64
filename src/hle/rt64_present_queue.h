@@ -16,6 +16,9 @@
 
 namespace RT64 {
     struct WorkloadQueue;
+#ifdef RT64_XR_SUPPORT
+    struct XRContext;
+#endif
 
     struct PresentQueue {
         struct External {
@@ -27,6 +30,11 @@ namespace RT64 {
             SharedQueueResources *sharedResources = nullptr;
             const ShaderLibrary *shaderLibrary = nullptr;
             UserConfiguration::GraphicsAPI createdGraphicsAPI = UserConfiguration::GraphicsAPI::OptionCount;
+#ifdef RT64_XR_SUPPORT
+            // Non-null when VR is active; the present thread mirrors each
+            // presented frame into the XR cinema layer and paces from it.
+            XRContext *xrContext = nullptr;
+#endif
         };
 
         External ext;

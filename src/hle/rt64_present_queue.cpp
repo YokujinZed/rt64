@@ -9,6 +9,11 @@
 
 #include "rt64_workload_queue.h"
 
+#if defined(RT64_XR_SUPPORT) && defined(_WIN64)
+#   include "plume_d3d12.h"
+#   include "xr/rt64_xr_context.h"
+#endif
+
 namespace RT64 {
     // PresentQueue
 
@@ -358,7 +363,22 @@ namespace RT64 {
                     if (inspector != nullptr) {
                         inspector->draw(commandList);
                     }
-                    
+
+#           if defined(RT64_XR_SUPPORT) && defined(_WIN64)
+                    // VR cinema layer: mirror the finished frame into the XR
+                    // swapchain on this same command list. Plume barriers for
+                    // the plume texture, raw D3D12 barriers inside the XR copy.
+                    bool xrCopyRecorded = false;
+                    if ((ext.xrContext != nullptr) && (ext.createdGraphicsAPI == UserConfiguration::GraphicsAPI::D3D12)) {
+                        commandList->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COPY_SOURCE));
+                        xrCopyRecorded = ext.xrContext->pt_recordFrameCopy(
+                            static_cast<plume::D3D12CommandList *>(commandList)->d3d,
+                            static_cast<plume::D3D12Texture *>(swapChainTexture)->d3d,
+                            ext.swapChain->getWidth(), ext.swapChain->getHeight());
+                        commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
+                    }
+#           endif
+
                     commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
                     commandList->end();
                     const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
@@ -366,6 +386,14 @@ namespace RT64 {
                     RenderCommandSemaphore *signalSemaphore = drawSemaphores[swapChainIndex].get();
                     ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandList, 1, &waitSemaphore, 1, &signalSemaphore, 1, ext.presentGraphicsWorker->commandFence.get());
                     ext.presentGraphicsWorker->wait();
+
+#           if defined(RT64_XR_SUPPORT) && defined(_WIN64)
+                    // The fence wait above makes the copy GPU-complete, which
+                    // satisfies the release-before-xrEndFrame ordering.
+                    if (xrCopyRecorded) {
+                        ext.xrContext->pt_releaseFrame();
+                    }
+#           endif
                 }
             }
 
@@ -389,13 +417,25 @@ namespace RT64 {
             }
 
             if (presentFrame && swapChainValid) {
-                // Wait until the approximate time the next present should be at the current intended rate.
-                if ((presentTimestamp != Timestamp()) && (targetRate > 0) && (targetRate > viOriginalRate)) {
-                    Timer::preciseSleepUntil(presentTimestamp + std::chrono::nanoseconds(1'000'000'000 / targetRate));
+                // VR: pace from the XR display loop instead of the software
+                // timer and the swap chain's vsync backpressure. Falls back to
+                // the flat path if the session dies (tick wait times out).
+                bool xrPaced = false;
+#           if defined(RT64_XR_SUPPORT) && defined(_WIN64)
+                if ((ext.xrContext != nullptr) && ext.xrContext->isSessionRunning()) {
+                    xrPaced = ext.xrContext->pt_waitForDisplayTick();
                 }
+#           endif
 
-                if (presentWaitEnabled) {
-                    ext.swapChain->wait();
+                // Wait until the approximate time the next present should be at the current intended rate.
+                if (!xrPaced) {
+                    if ((presentTimestamp != Timestamp()) && (targetRate > 0) && (targetRate > viOriginalRate)) {
+                        Timer::preciseSleepUntil(presentTimestamp + std::chrono::nanoseconds(1'000'000'000 / targetRate));
+                    }
+
+                    if (presentWaitEnabled) {
+                        ext.swapChain->wait();
+                    }
                 }
 
                 RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
@@ -447,6 +487,7 @@ namespace RT64 {
         int processCursor = -1;
         bool skipPresent = false;
         uint32_t displayTimingRate = UINT32_MAX;
+        uint32_t hmdRate = 0;
         const bool displayTiming = ext.device->getCapabilities().displayTiming;
         bool swapChainValid = !ext.swapChain->needsResize();
         while (presentThreadRunning) {
@@ -486,7 +527,9 @@ namespace RT64 {
 
                 if (needsResize || ext.appWindow->detectWindowMoved()) {
                     ext.appWindow->detectRefreshRate();
-                    ext.sharedResources->setSwapChainRate(std::min(ext.appWindow->getRefreshRate(), displayTimingRate));
+                    if (hmdRate == 0) {
+                        ext.sharedResources->setSwapChainRate(std::min(ext.appWindow->getRefreshRate(), displayTimingRate));
+                    }
                 }
 
                 if (displayTiming) {
@@ -496,10 +539,24 @@ namespace RT64 {
                     }
 
                     if (newDisplayTimingRate != displayTimingRate) {
-                        ext.sharedResources->setSwapChainRate(std::min(ext.appWindow->getRefreshRate(), newDisplayTimingRate));
+                        if (hmdRate == 0) {
+                            ext.sharedResources->setSwapChainRate(std::min(ext.appWindow->getRefreshRate(), newDisplayTimingRate));
+                        }
                         displayTimingRate = newDisplayTimingRate;
                     }
                 }
+
+#           if defined(RT64_XR_SUPPORT) && defined(_WIN64)
+                // VR: the interpolation target follows the HMD refresh rate,
+                // overriding the monitor-based writes above.
+                if (ext.xrContext != nullptr) {
+                    const uint32_t newHmdRate = ext.xrContext->displayRateHz();
+                    if ((newHmdRate > 0) && (newHmdRate != hmdRate)) {
+                        ext.sharedResources->setSwapChainRate(newHmdRate);
+                        hmdRate = newHmdRate;
+                    }
+                }
+#           endif
 
                 skipPresent = skipPresent || ext.swapChain->isEmpty();
 
