@@ -4,7 +4,9 @@
 
 #include "rt64_workload_queue.h"
 
+#include <cmath>
 #include <cstdlib>
+#include <limits>
 
 #include "common/rt64_thread.h"
 
@@ -325,6 +327,7 @@ namespace RT64 {
             projParams.eyeLevelAnchor = eyeParams.levelAnchor;
             float gameTanX = 0.0f;
             float gameTanY = 0.0f;
+            float gameCameraYaw = std::numeric_limits<float>::quiet_NaN();
             if (eyeParams.enabled) {
                 projParams.eyeViewOffset = eyeParams.viewOffset;
                 projParams.eyeTanLeft = eyeParams.tanLeft;
@@ -333,6 +336,7 @@ namespace RT64 {
                 projParams.eyeTanUp = eyeParams.tanUp;
                 projParams.outTanX = &gameTanX;
                 projParams.outTanY = &gameTanY;
+                projParams.outCameraYaw = &gameCameraYaw;
             }
             projectionProcessor.process(projParams);
 #           ifdef RT64_XR_SUPPORT
@@ -340,6 +344,10 @@ namespace RT64 {
             // the frustum the eyes were rendered with (stereo fusion fix).
             if (eyeParams.enabled && (ext.xrContext != nullptr) && (gameTanX > 0.0f) && (gameTanY > 0.0f)) {
                 ext.xrContext->setRenderedFov(gameTanX, gameTanY);
+            }
+            // And the level camera yaw for the follow controller.
+            if (eyeParams.enabled && eyeParams.levelAnchor && (ext.xrContext != nullptr)) {
+                ext.xrContext->setRenderedCameraYaw(gameCameraYaw);
             }
 #           endif
             projectionProcessor.upload(projParams);
@@ -1111,6 +1119,12 @@ namespace RT64 {
                         ext.sharedResources->stereoFrameMeta.resize(displayFrames);
                     }
                     ext.sharedResources->stereoFramesActive = stereoActive;
+                }
+
+                // Camera-follow yaw transfer: once per workload, before the
+                // display-frame loop builds this workload's eye poses.
+                if (stereoActive) {
+                    ext.xrContext->wl_updateYawTransfer();
                 }
 #           endif
                 

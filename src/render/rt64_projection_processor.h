@@ -40,6 +40,9 @@ namespace RT64 {
             // fix for stereo double vision). Written when eyeOverrideEnabled.
             float *outTanX = nullptr;
             float *outTanY = nullptr;
+            // Output: the level camera's yaw (radians, game convention) for
+            // the head-follow controller. Written when eyeLevelAnchor.
+            float *outCameraYaw = nullptr;
         };
 
         ProjectionProcessor();

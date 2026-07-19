@@ -18,6 +18,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -148,6 +149,17 @@ namespace RT64 {
         // submits a frustum matching what was rendered (stereo fusion).
         void setRenderedFov(float tanX, float tanY);
 
+        // Camera-follow (M4.5). The game camera's level yaw is published per
+        // rendered workload; the transfer moves observed camera rotation into
+        // a virtual-anchor yaw offset so the rendered world stays pinned while
+        // the camera catches up to the gaze. Workload-thread only (wl_*).
+        void setFollowTransfer(bool enabled, float transferSign);
+        void setRenderedCameraYaw(float yawRadians); // NaN = unknown this frame
+        void wl_updateYawTransfer();
+        // Residual gaze-vs-camera yaw in degrees for the input mux (NaN if
+        // unknown); generation increments per workload update.
+        float sampleHeadOffsetDegrees(uint64_t &outGeneration) const;
+
     private:
         void frameLoop();
         bool createActions();
@@ -255,6 +267,19 @@ namespace RT64 {
         std::atomic<float> unitsPerMeter{ 100.0f };
         std::atomic<float> renderedTanX{ 0.0f };
         std::atomic<float> renderedTanY{ 0.0f };
+
+        // Camera-follow state. yawOffset rotates the virtual anchor (applied
+        // to render AND echo identically). Single writer: the workload thread
+        // via wl_updateYawTransfer; the frame loop only requests resets.
+        std::atomic<bool> followTransferEnabled{ false };
+        std::atomic<float> followTransferSign{ 1.0f };
+        std::atomic<float> renderedCameraYaw{ std::numeric_limits<float>::quiet_NaN() };
+        std::atomic<float> headYawInAnchor{ std::numeric_limits<float>::quiet_NaN() };
+        std::atomic<float> yawOffset{ 0.0f };
+        std::atomic<bool> yawOffsetResetPending{ false };
+        std::atomic<float> headOffsetResidualDeg{ std::numeric_limits<float>::quiet_NaN() };
+        std::atomic<uint64_t> headOffsetGeneration{ 0 };
+        float followPrevCameraYaw = std::numeric_limits<float>::quiet_NaN(); // workload thread only
 
         std::thread frameThread;
         std::atomic<bool> quitRequested{ false };

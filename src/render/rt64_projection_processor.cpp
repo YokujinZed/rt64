@@ -151,6 +151,17 @@ namespace RT64 {
             // Applied after interpolation so the offset rides the smooth camera.
             if (p.eyeOverrideEnabled && (proj.type == Projection::Type::Perspective) && !workload.debuggerCamera.enabled) {
                 if (p.eyeLevelAnchor) {
+                    // Publish the level camera yaw for the follow controller
+                    // (pre-eye-offset, so both eye passes agree).
+                    if (p.outCameraYaw != nullptr) {
+                        const hlslpp::float4x4 invViewForYaw = hlslpp::inverse(viewMatrix);
+                        const float backX = float(invViewForYaw[2].x);
+                        const float backZ = float(invViewForYaw[2].z);
+                        if ((backX * backX + backZ * backZ) > 1e-8f) {
+                            *p.outCameraYaw = std::atan2(backX, backZ);
+                        }
+                    }
+
                     // Head tracking: compose the eye offset against a LEVEL
                     // (gravity-aligned) frame at the game camera — position and
                     // yaw only, with the head supplying pitch/roll. Composing

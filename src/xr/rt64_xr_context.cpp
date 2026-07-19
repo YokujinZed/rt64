@@ -205,22 +205,112 @@ namespace RT64 {
         renderedTanY = tanY;
     }
 
+    static float wrapPi(float angle) {
+        constexpr float pi = 3.14159265f;
+        while (angle > pi) angle -= 2.0f * pi;
+        while (angle < -pi) angle += 2.0f * pi;
+        return angle;
+    }
+
+    void XRContext::setFollowTransfer(bool enabled, float transferSign) {
+        followTransferEnabled = enabled;
+        followTransferSign = transferSign;
+    }
+
+    void XRContext::setRenderedCameraYaw(float yawRadians) {
+        renderedCameraYaw = yawRadians;
+    }
+
+    void XRContext::wl_updateYawTransfer() {
+        if (!followTransferEnabled || !headTrackingEnabled || !isStereoEnabled()) {
+            followPrevCameraYaw = std::numeric_limits<float>::quiet_NaN();
+            headOffsetResidualDeg = std::numeric_limits<float>::quiet_NaN();
+            return;
+        }
+
+        if (yawOffsetResetPending.exchange(false)) {
+            yawOffset = 0.0f;
+            followPrevCameraYaw = std::numeric_limits<float>::quiet_NaN();
+        }
+
+        const float cameraYaw = renderedCameraYaw.load();
+        if (std::isnan(cameraYaw)) {
+            followPrevCameraYaw = cameraYaw;
+            return;
+        }
+
+        if (!std::isnan(followPrevCameraYaw)) {
+            const float delta = wrapPi(cameraYaw - followPrevCameraYaw);
+            // Rotations larger than any camera motion injection could cause in
+            // one workload are camera cuts: don't transfer, re-anchor instead.
+            constexpr float cutThreshold = 0.35f; // ~20 degrees
+            if (std::abs(delta) < cutThreshold) {
+                yawOffset = wrapPi(yawOffset.load() + followTransferSign.load() * delta);
+            }
+            else {
+                requestRecenter();
+            }
+        }
+        followPrevCameraYaw = cameraYaw;
+
+        // Residual gaze-vs-camera yaw for the injection controller. Signs are
+        // calibrated in the field via the config sign constants.
+        const float headYaw = headYawInAnchor.load();
+        if (!std::isnan(headYaw)) {
+            headOffsetResidualDeg = wrapPi(yawOffset.load() - headYaw) * 57.29578f;
+            headOffsetGeneration++;
+        }
+        else {
+            headOffsetResidualDeg = std::numeric_limits<float>::quiet_NaN();
+        }
+    }
+
+    float XRContext::sampleHeadOffsetDegrees(uint64_t &outGeneration) const {
+        outGeneration = headOffsetGeneration.load();
+        return headOffsetResidualDeg.load();
+    }
+
     // Converts one located eye view into the renderer-side view offset and the
     // pose to echo at submit. usedPosition = eye position minus the head
     // position (orientation-only tracking v1: the rotated IPD survives, leaning
     // does not move the camera; with tracking off headPosition is zero).
     void XRContext::buildEyeParamsFromView(const XrView &view, const float headPos[3], XREyeParams &outParams, XRStereoFrameMeta &meta, uint32_t eyeIndex) const {
-        const float usedX = view.pose.position.x - headPos[0];
-        const float usedY = view.pose.position.y - headPos[1];
-        const float usedZ = view.pose.position.z - headPos[2];
+        float usedX = view.pose.position.x - headPos[0];
+        float usedY = view.pose.position.y - headPos[1];
+        float usedZ = view.pose.position.z - headPos[2];
+        XrQuaternionf poseQ = view.pose.orientation;
+
+        // Camera-follow virtual anchor: rotate the pose about Y by -yawOffset
+        // in OpenXR space. Render and echo both use this rotated pose, so the
+        // compositor stays consistent while the offset changes per frame.
+        const float yawOff = yawOffset.load();
+        if (yawOff != 0.0f) {
+            const float c = std::cos(yawOff);
+            const float s = std::sin(yawOff);
+            // Position rotated by R_y(-yawOff).
+            const float rx = c * usedX - s * usedZ;
+            const float rz = s * usedX + c * usedZ;
+            usedX = rx;
+            usedZ = rz;
+            // Orientation pre-multiplied by qY(-yawOff).
+            const float hy = -0.5f * yawOff;
+            const float qw = std::cos(hy);
+            const float qy = std::sin(hy);
+            const XrQuaternionf a = { 0.0f, qy, 0.0f, qw };
+            const XrQuaternionf b = poseQ;
+            poseQ.w = a.w * b.w - a.y * b.y;
+            poseQ.x = a.w * b.x + a.y * b.z;
+            poseQ.y = a.w * b.y + a.y * b.w;
+            poseQ.z = a.w * b.z - a.y * b.x;
+        }
 
         // The game's view space differs from OpenXR's by a 180-degree rotation
         // about X (field-verified: pitch matched while yaw and roll were
         // mirrored). Conjugate the pose into the game convention for the
         // RENDER matrix only — negate the y/z components of the quaternion
         // vector part and of the translation. The metadata below keeps the
-        // true OpenXR-convention pose for the compositor.
-        XrQuaternionf q = view.pose.orientation;
+        // OpenXR-convention (rotated) pose for the compositor.
+        XrQuaternionf q = poseQ;
         q.y = -q.y;
         q.z = -q.z;
         const float scale = unitsPerMeter.load();
@@ -259,14 +349,16 @@ namespace RT64 {
         outParams.tanUp = std::tan(view.fov.angleUp);
         outParams.valid = true;
 
-        // Echo the TRUE OpenXR-convention pose (not the game-converted one).
+        // Echo the OpenXR-convention pose the frame was rendered with
+        // (including the virtual-anchor rotation, excluding the game-space
+        // conjugation which is a render-side representation change only).
         meta.posePosition[eyeIndex][0] = usedX;
         meta.posePosition[eyeIndex][1] = usedY;
         meta.posePosition[eyeIndex][2] = usedZ;
-        meta.poseOrientation[eyeIndex][0] = view.pose.orientation.x;
-        meta.poseOrientation[eyeIndex][1] = view.pose.orientation.y;
-        meta.poseOrientation[eyeIndex][2] = view.pose.orientation.z;
-        meta.poseOrientation[eyeIndex][3] = view.pose.orientation.w;
+        meta.poseOrientation[eyeIndex][0] = poseQ.x;
+        meta.poseOrientation[eyeIndex][1] = poseQ.y;
+        meta.poseOrientation[eyeIndex][2] = poseQ.z;
+        meta.poseOrientation[eyeIndex][3] = poseQ.w;
     }
 
     XREyeParams XRContext::buildEyeParams(uint32_t eyeIndex) const {
@@ -368,6 +460,10 @@ namespace RT64 {
         }
         quadSpace = newQuadSpace;
         anchorSpace = newAnchorSpace;
+
+        // The virtual-anchor yaw offset is relative to the (now replaced)
+        // anchor; the workload thread consumes this and zeroes it.
+        yawOffsetResetPending = true;
         return true;
     }
 
@@ -975,15 +1071,20 @@ namespace RT64 {
                     float headPos[3] = {};
                     if (tracking && valid) {
                         XrSpaceLocation headLocation = { XR_TYPE_SPACE_LOCATION };
-                        constexpr XrSpaceLocationFlags headRequired = XR_SPACE_LOCATION_POSITION_VALID_BIT;
+                        constexpr XrSpaceLocationFlags headRequired = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
                         if (XR_SUCCEEDED(xrLocateSpace(viewSpace, anchorSpace, frameState.predictedDisplayTime, &headLocation)) &&
                             ((headLocation.locationFlags & headRequired) == headRequired)) {
                             headPos[0] = headLocation.pose.position.x;
                             headPos[1] = headLocation.pose.position.y;
                             headPos[2] = headLocation.pose.position.z;
+
+                            // Head yaw in the anchor for the follow controller.
+                            const XrQuaternionf &hq = headLocation.pose.orientation;
+                            headYawInAnchor = std::atan2(2.0f * (hq.x * hq.z + hq.w * hq.y), 1.0f - 2.0f * (hq.x * hq.x + hq.y * hq.y));
                         }
                         else {
                             valid = false;
+                            headYawInAnchor = std::numeric_limits<float>::quiet_NaN();
                         }
                     }
 
