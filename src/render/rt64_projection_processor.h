@@ -26,6 +26,10 @@ namespace RT64 {
             // replaced by an asymmetric frustum built from the tangent
             // half-angles (near/far preserved from the game's projection).
             bool eyeOverrideEnabled = false;
+            // When set (head tracking), the eye offset composes against a
+            // LEVEL camera frame (game camera position/yaw, gravity-aligned)
+            // so head rotations happen about true world axes.
+            bool eyeLevelAnchor = false;
             hlslpp::float4x4 eyeViewOffset;
             float eyeTanLeft = -1.0f;
             float eyeTanRight = 1.0f;

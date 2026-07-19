@@ -150,8 +150,52 @@ namespace RT64 {
             // expects. Stereo depth comes from the parallax of the two views.
             // Applied after interpolation so the offset rides the smooth camera.
             if (p.eyeOverrideEnabled && (proj.type == Projection::Type::Perspective) && !workload.debuggerCamera.enabled) {
-                viewMatrix = hlslpp::mul(viewMatrix, p.eyeViewOffset);
-                prevViewTransform = hlslpp::mul(prevViewTransform, p.eyeViewOffset);
+                if (p.eyeLevelAnchor) {
+                    // Head tracking: compose the eye offset against a LEVEL
+                    // (gravity-aligned) frame at the game camera — position and
+                    // yaw only, with the head supplying pitch/roll. Composing
+                    // in the raw (pitched) camera frame rotates head yaw about
+                    // a tilted axis, which rolls the horizon and corrupts the
+                    // turn direction; the level frame also matches the
+                    // gravity-aligned anchor space the layer is submitted in.
+                    // Conventions per lookAtPerspective: invView rows are
+                    // side / up / backward / position.
+                    auto levelViewOf = [](const interop::float4x4 &view, interop::float4x4 &outLevel) {
+                        const hlslpp::float4x4 invView = hlslpp::inverse(view);
+                        hlslpp::float3 backward = invView[2].xyz;
+                        backward.y = 0.0f;
+                        const float backLength = float(hlslpp::length(backward));
+                        if (backLength < 1e-4f) {
+                            // Near-vertical camera: no stable yaw, keep as-is.
+                            outLevel = view;
+                            return;
+                        }
+
+                        backward = backward / backLength;
+                        const hlslpp::float3 up = hlslpp::float3(0.0f, 1.0f, 0.0f);
+                        const hlslpp::float3 side = hlslpp::normalize(hlslpp::cross(up, backward));
+                        hlslpp::float4x4 invLevel;
+                        invLevel[0] = hlslpp::float4(side, 0.0f);
+                        invLevel[1] = hlslpp::float4(up, 0.0f);
+                        invLevel[2] = hlslpp::float4(backward, 0.0f);
+                        invLevel[3] = hlslpp::float4(invView[3].xyz, 1.0f);
+                        outLevel = hlslpp::inverse(invLevel);
+                    };
+
+                    interop::float4x4 levelView;
+                    levelViewOf(viewMatrix, levelView);
+                    viewMatrix = hlslpp::mul(levelView, p.eyeViewOffset);
+
+                    interop::float4x4 prevLevelView;
+                    levelViewOf(prevViewTransform, prevLevelView);
+                    prevViewTransform = hlslpp::mul(prevLevelView, p.eyeViewOffset);
+                }
+                else {
+                    // Stereo without head tracking: pure IPD offset in the
+                    // camera's own frame, game pitch preserved.
+                    viewMatrix = hlslpp::mul(viewMatrix, p.eyeViewOffset);
+                    prevViewTransform = hlslpp::mul(prevViewTransform, p.eyeViewOffset);
+                }
 
                 // Report the game's symmetric FOV so the XR projection layer
                 // echoes the frustum it was rendered with (m[0][0]/m[1][1] are

@@ -57,6 +57,7 @@ namespace RT64 {
         // module converts headset poses/frustums into these.
         struct EyeRenderParams {
             bool enabled = false;
+            bool levelAnchor = false; // compose against a gravity-aligned camera frame (head tracking)
             hlslpp::float4x4 viewOffset;
             float tanLeft = -1.0f;
             float tanRight = 1.0f;

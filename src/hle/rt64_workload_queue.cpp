@@ -322,6 +322,7 @@ namespace RT64 {
             projParams.prevFrameWeight = prevFrameWeight;
             projParams.aspectRatioScale = workloadConfig.aspectRatioScale;
             projParams.eyeOverrideEnabled = eyeParams.enabled;
+            projParams.eyeLevelAnchor = eyeParams.levelAnchor;
             float gameTanX = 0.0f;
             float gameTanY = 0.0f;
             if (eyeParams.enabled) {
@@ -1194,6 +1195,7 @@ namespace RT64 {
                     if (stereoActive) {
                         XREyeParams leftXr, rightXr;
                         XRStereoFrameMeta frameMeta;
+                        const bool trackingActive = ext.xrContext->isHeadTrackingEnabled();
                         if (ext.xrContext->buildEyeParamsPair(leftXr, rightXr, frameMeta) && (frame < rightEyeTargets.size())) {
                             // Publish the rendered poses for this display frame
                             // before it becomes available to the present thread.
@@ -1207,11 +1209,13 @@ namespace RT64 {
                             // Right eye first into its dedicated target; when it
                             // is done, everything the left frame's counters
                             // guarantee applies to it as well.
-                            const EyeRenderParams rightParams = toEyeRenderParams(rightXr);
+                            EyeRenderParams rightParams = toEyeRenderParams(rightXr);
+                            rightParams.levelAnchor = trackingActive;
                             threadRenderFrame(curFrame, prevFrame, workloadConfig, workload.debuggerRenderer, workload.debuggerCamera, curFrameWeight, prevFrameWeight, deltaTimeMs,
                                 interpolationTargetKey, interpolationTargetFbPairIndex, rightEyeTargets[frame].get(), 0x100 + frame, velocityUploaderUsed, false, tileInterpolationUsed, lookAtInterpolationUsed,
                                 rightParams);
                             eyeParams = toEyeRenderParams(leftXr);
+                            eyeParams.levelAnchor = trackingActive;
                         }
                     }
                     // Stereo bring-up aid: RT64_XR_DEBUG_EYE=0|1 renders the
