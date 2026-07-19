@@ -31,6 +31,8 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+#include "rt64_xr_meta.h"
+
 namespace RT64 {
     // Generic single-controller state. Hosts map this to game-specific inputs.
     struct XRControllerState {
@@ -100,8 +102,9 @@ namespace RT64 {
 
         // Stereo variants: an arraySize=2 swapchain fed by two eye images of
         // identical size/format (matched to the sources' DXGI format). Same
-        // contract as the mono pair above.
-        bool pt_recordStereoCopy(ID3D12GraphicsCommandList *commandList, ID3D12Resource *leftTexture, ID3D12Resource *rightTexture, uint32_t width, uint32_t height);
+        // contract as the mono pair above. meta carries the poses the frame was
+        // rendered with; the release publishes it for the layer submission.
+        bool pt_recordStereoCopy(ID3D12GraphicsCommandList *commandList, ID3D12Resource *leftTexture, ID3D12Resource *rightTexture, uint32_t width, uint32_t height, const XRStereoFrameMeta *meta);
         void pt_releaseStereoFrame();
 
         // Blocks until the frame loop's next xrWaitFrame tick (or a short
@@ -126,13 +129,21 @@ namespace RT64 {
         // to left-stick-click on the controllers).
         void requestRecenter();
 
-        // Stereo (M3). Eye views are located head-relative (VIEW space), so
-        // buildEyeParams yields pure stereo offsets — head tracking composes
-        // separately in a later milestone.
+        // Stereo (M3) and head tracking (M4). With head tracking off, eye views
+        // are located head-relative (VIEW space) = pure stereo offsets. With it
+        // on, eye views are located in the recenterable anchor space and the
+        // head position is subtracted (orientation-only v1), so looking around
+        // works while leaning does not move the camera yet.
         void setStereoEnabled(bool enabled);
         bool isStereoEnabled() const;
+        void setHeadTrackingEnabled(bool enabled);
+        bool isHeadTrackingEnabled() const;
         void setUnitsPerMeter(float units);
         XREyeParams buildEyeParams(uint32_t eyeIndex) const; // 0 = left, 1 = right
+        // Coherent both-eyes sample under a single lock: fills renderer-side
+        // eye params for both eyes plus the pose metadata to echo at submit.
+        // Returns false while eye views are not valid.
+        bool buildEyeParamsPair(XREyeParams &leftParams, XREyeParams &rightParams, XRStereoFrameMeta &meta) const;
         // The game's symmetric FOV half-tangents, so the projection layer
         // submits a frustum matching what was rendered (stereo fusion).
         void setRenderedFov(float tanX, float tanY);
@@ -144,7 +155,9 @@ namespace RT64 {
         void syncActions(XrTime predictedDisplayTime);
         void pollEvents();
         void destroyHandles();
-        void recenterQuadSpace(XrTime time);
+        bool locateYawFlattenedHead(XrTime time, XrPosef &outPose) const;
+        bool applyRecenter(XrTime time);
+        void buildEyeParamsFromView(const XrView &view, const float headPosition[3], XREyeParams &outParams, XRStereoFrameMeta &meta, uint32_t eyeIndex) const;
 #   ifdef _WIN32
         bool ensureQuadSwapchain(uint32_t width, uint32_t height);
         void destroyQuadSwapchain();
@@ -169,10 +182,13 @@ namespace RT64 {
         XrPath handPaths[2] = { XR_NULL_PATH, XR_NULL_PATH }; // 0 = left, 1 = right
 
         // Spaces: baseSpace is a pristine LOCAL space used only for locating
-        // the view; quadSpace is LOCAL with the latest recenter pose baked in.
+        // the view; quadSpace and anchorSpace are LOCAL with the latest
+        // recenter pose baked in (anchorSpace hosts the head-tracked stereo
+        // world; the game camera anchor == head pose at recenter time).
         XrSpace baseSpace = XR_NULL_HANDLE;
         XrSpace viewSpace = XR_NULL_HANDLE;
         XrSpace quadSpace = XR_NULL_HANDLE;
+        XrSpace anchorSpace = XR_NULL_HANDLE;
 
         // Cinema quad swapchain. Handles are guarded by quadMutex against the
         // frame loop's xrEndFrame; the image cycle state is present-thread-only.
@@ -205,6 +221,11 @@ namespace RT64 {
         bool stereoPendingRelease = false;
         std::atomic<bool> stereoReady{ false };
         bool stereoTimeoutLogged = false;
+        // Pose metadata staged by the present thread with the pending image
+        // (present-thread-only) and published at release (under quadMutex) for
+        // the frame loop's layer submission.
+        XRStereoFrameMeta pendingStereoMeta;
+        XRStereoFrameMeta submittedStereoMeta;
 
         // Freshness stamps: the frame loop submits whichever layer was fed most
         // recently, so a stalled stereo path hands off to the live cinema copy
@@ -223,11 +244,14 @@ namespace RT64 {
         std::atomic<bool> recenterRequested{ false };
         bool prevRecenterClick = false;
 
-        // Head-relative eye views, refreshed once per XR frame.
+        // Eye views (+ head position when tracking), refreshed once per XR
+        // frame. Located in VIEW space (tracking off) or anchorSpace (on).
         mutable std::mutex eyeViewsMutex;
         XrView eyeViews[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+        float headPosition[3] = {};
         bool eyeViewsValid = false;
         std::atomic<bool> stereoEnabled{ false };
+        std::atomic<bool> headTrackingEnabled{ false };
         std::atomic<float> unitsPerMeter{ 100.0f };
         std::atomic<float> renderedTanX{ 0.0f };
         std::atomic<float> renderedTanY{ 0.0f };

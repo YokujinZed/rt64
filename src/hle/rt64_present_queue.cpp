@@ -374,10 +374,14 @@ namespace RT64 {
                     bool xrStereoRecorded = false;
                     if ((ext.xrContext != nullptr) && (ext.createdGraphicsAPI == UserConfiguration::GraphicsAPI::D3D12)) {
                         RenderTarget *rightEyeTarget = nullptr;
+                        XRStereoFrameMeta frameMeta;
                         {
                             std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
                             if (ext.sharedResources->stereoFramesActive && (colorTarget != nullptr) && (uint32_t(i) < ext.sharedResources->stereoRightEyeTargets.size())) {
                                 rightEyeTarget = ext.sharedResources->stereoRightEyeTargets[i].get();
+                                if (uint32_t(i) < ext.sharedResources->stereoFrameMeta.size()) {
+                                    frameMeta = ext.sharedResources->stereoFrameMeta[i];
+                                }
                             }
                         }
 
@@ -431,7 +435,7 @@ namespace RT64 {
                                 static_cast<plume::D3D12CommandList *>(commandList)->d3d,
                                 static_cast<plume::D3D12Texture *>(leftTexture)->d3d,
                                 static_cast<plume::D3D12Texture *>(rightTexture)->d3d,
-                                colorTarget->width, colorTarget->height);
+                                colorTarget->width, colorTarget->height, &frameMeta);
                             commandList->barriers(RenderBarrierStage::GRAPHICS, {
                                 RenderTextureBarrier(leftTexture, RenderTextureLayout::SHADER_READ),
                                 RenderTextureBarrier(rightTexture, RenderTextureLayout::COLOR_WRITE),

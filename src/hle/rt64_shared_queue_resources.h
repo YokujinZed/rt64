@@ -13,6 +13,10 @@
 
 #include "rt64_framebuffer_manager.h"
 
+#ifdef RT64_XR_SUPPORT
+#   include "xr/rt64_xr_meta.h"
+#endif
+
 #if RT_ENABLED
 #   include "render/rt64_raytracing_resources.h"
 #endif
@@ -65,6 +69,9 @@ namespace RT64 {
         // say the left frame is presentable/reusable, the right one is too.
         // stereoFramesActive is written under interpolatedMutex.
         std::vector<std::unique_ptr<RenderTarget>> stereoRightEyeTargets;
+        // Rendered eye poses per display frame, parallel to the targets, so
+        // the projection layer can echo the pose each frame was rendered with.
+        std::vector<XRStereoFrameMeta> stereoFrameMeta;
         bool stereoFramesActive = false;
 #   endif
 

@@ -1106,6 +1106,9 @@ namespace RT64 {
                             rightEyeTargets[i] = std::make_unique<RenderTarget>(interpolationTargetKey.address, Framebuffer::Type::Color, RenderMultisampling(), usesHDR);
                         }
                     }
+                    if (stereoActive && (ext.sharedResources->stereoFrameMeta.size() < displayFrames)) {
+                        ext.sharedResources->stereoFrameMeta.resize(displayFrames);
+                    }
                     ext.sharedResources->stereoFramesActive = stereoActive;
                 }
 #           endif
@@ -1189,9 +1192,18 @@ namespace RT64 {
                     };
 
                     if (stereoActive) {
-                        const XREyeParams leftXr = ext.xrContext->buildEyeParams(0);
-                        const XREyeParams rightXr = ext.xrContext->buildEyeParams(1);
-                        if (leftXr.valid && rightXr.valid && (frame < rightEyeTargets.size())) {
+                        XREyeParams leftXr, rightXr;
+                        XRStereoFrameMeta frameMeta;
+                        if (ext.xrContext->buildEyeParamsPair(leftXr, rightXr, frameMeta) && (frame < rightEyeTargets.size())) {
+                            // Publish the rendered poses for this display frame
+                            // before it becomes available to the present thread.
+                            {
+                                std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
+                                if (frame < ext.sharedResources->stereoFrameMeta.size()) {
+                                    ext.sharedResources->stereoFrameMeta[frame] = frameMeta;
+                                }
+                            }
+
                             // Right eye first into its dedicated target; when it
                             // is done, everything the left frame's counters
                             // guarantee applies to it as well.

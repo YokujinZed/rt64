@@ -166,6 +166,11 @@ namespace RT64 {
             return false;
         }
 
+        result = xrCreateReferenceSpace(session, &spaceInfo, &anchorSpace);
+        if (!xrCheck(instance, result, "xrCreateReferenceSpace(LOCAL anchor)")) {
+            return false;
+        }
+
         spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
         result = xrCreateReferenceSpace(session, &spaceInfo, &viewSpace);
         return xrCheck(instance, result, "xrCreateReferenceSpace(VIEW)");
@@ -183,6 +188,14 @@ namespace RT64 {
         return stereoEnabled && sessionRunning;
     }
 
+    void XRContext::setHeadTrackingEnabled(bool enabled) {
+        headTrackingEnabled = enabled;
+    }
+
+    bool XRContext::isHeadTrackingEnabled() const {
+        return headTrackingEnabled;
+    }
+
     void XRContext::setUnitsPerMeter(float units) {
         unitsPerMeter = units;
     }
@@ -192,30 +205,23 @@ namespace RT64 {
         renderedTanY = tanY;
     }
 
-    XREyeParams XRContext::buildEyeParams(uint32_t eyeIndex) const {
-        XREyeParams params;
-        if ((eyeIndex > 1) || !isStereoEnabled()) {
-            return params;
-        }
-
-        XrView view = { XR_TYPE_VIEW };
-        {
-            const std::lock_guard<std::mutex> lock(eyeViewsMutex);
-            if (!eyeViewsValid) {
-                return params;
-            }
-            view = eyeViews[eyeIndex];
-        }
+    // Converts one located eye view into the renderer-side view offset and the
+    // pose to echo at submit. usedPosition = eye position minus the head
+    // position (orientation-only tracking v1: the rotated IPD survives, leaning
+    // does not move the camera; with tracking off headPosition is zero).
+    void XRContext::buildEyeParamsFromView(const XrView &view, const float headPos[3], XREyeParams &outParams, XRStereoFrameMeta &meta, uint32_t eyeIndex) const {
+        const XrQuaternionf &q = view.pose.orientation;
+        const float usedX = view.pose.position.x - headPos[0];
+        const float usedY = view.pose.position.y - headPos[1];
+        const float usedZ = view.pose.position.z - headPos[2];
+        const float scale = unitsPerMeter.load();
+        const float tx = usedX * scale;
+        const float ty = usedY * scale;
+        const float tz = usedZ * scale;
 
         // Head-to-eye inverse as a row-vector matrix (v' = v * M, translation
         // in row 3). With column-convention rotation R from the quaternion and
-        // head-relative eye position t: rows 0-2 = rows of R, row 3 = -t * R.
-        const XrQuaternionf &q = view.pose.orientation;
-        const float scale = unitsPerMeter.load();
-        const float tx = view.pose.position.x * scale;
-        const float ty = view.pose.position.y * scale;
-        const float tz = view.pose.position.z * scale;
-
+        // eye position t: rows 0-2 = rows of R, row 3 = -t * R.
         float r[3][3];
         r[0][0] = 1.0f - 2.0f * (q.y * q.y + q.z * q.z);
         r[0][1] = 2.0f * (q.x * q.y - q.w * q.z);
@@ -229,54 +235,130 @@ namespace RT64 {
 
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
-                params.viewOffset[i][j] = r[i][j];
+                outParams.viewOffset[i][j] = r[i][j];
             }
-            params.viewOffset[i][3] = 0.0f;
+            outParams.viewOffset[i][3] = 0.0f;
         }
         for (int j = 0; j < 3; j++) {
-            params.viewOffset[3][j] = -(tx * r[0][j] + ty * r[1][j] + tz * r[2][j]);
+            outParams.viewOffset[3][j] = -(tx * r[0][j] + ty * r[1][j] + tz * r[2][j]);
         }
-        params.viewOffset[3][3] = 1.0f;
+        outParams.viewOffset[3][3] = 1.0f;
 
-        params.tanLeft = std::tan(view.fov.angleLeft);
-        params.tanRight = std::tan(view.fov.angleRight);
-        params.tanDown = std::tan(view.fov.angleDown);
-        params.tanUp = std::tan(view.fov.angleUp);
-        params.valid = true;
+        outParams.tanLeft = std::tan(view.fov.angleLeft);
+        outParams.tanRight = std::tan(view.fov.angleRight);
+        outParams.tanDown = std::tan(view.fov.angleDown);
+        outParams.tanUp = std::tan(view.fov.angleUp);
+        outParams.valid = true;
+
+        meta.posePosition[eyeIndex][0] = usedX;
+        meta.posePosition[eyeIndex][1] = usedY;
+        meta.posePosition[eyeIndex][2] = usedZ;
+        meta.poseOrientation[eyeIndex][0] = q.x;
+        meta.poseOrientation[eyeIndex][1] = q.y;
+        meta.poseOrientation[eyeIndex][2] = q.z;
+        meta.poseOrientation[eyeIndex][3] = q.w;
+    }
+
+    XREyeParams XRContext::buildEyeParams(uint32_t eyeIndex) const {
+        XREyeParams params;
+        if ((eyeIndex > 1) || !isStereoEnabled()) {
+            return params;
+        }
+
+        XrView view = { XR_TYPE_VIEW };
+        float headPos[3] = {};
+        {
+            const std::lock_guard<std::mutex> lock(eyeViewsMutex);
+            if (!eyeViewsValid) {
+                return params;
+            }
+            view = eyeViews[eyeIndex];
+            headPos[0] = headPosition[0];
+            headPos[1] = headPosition[1];
+            headPos[2] = headPosition[2];
+        }
+
+        XRStereoFrameMeta unusedMeta;
+        buildEyeParamsFromView(view, headPos, params, unusedMeta, eyeIndex);
         return params;
     }
 
-    void XRContext::recenterQuadSpace(XrTime time) {
+    bool XRContext::buildEyeParamsPair(XREyeParams &leftParams, XREyeParams &rightParams, XRStereoFrameMeta &meta) const {
+        if (!isStereoEnabled()) {
+            return false;
+        }
+
+        XrView views[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+        float headPos[3] = {};
+        {
+            const std::lock_guard<std::mutex> lock(eyeViewsMutex);
+            if (!eyeViewsValid) {
+                return false;
+            }
+            views[0] = eyeViews[0];
+            views[1] = eyeViews[1];
+            headPos[0] = headPosition[0];
+            headPos[1] = headPosition[1];
+            headPos[2] = headPosition[2];
+        }
+
+        buildEyeParamsFromView(views[0], headPos, leftParams, meta, 0);
+        buildEyeParamsFromView(views[1], headPos, rightParams, meta, 1);
+        meta.valid = true;
+        return leftParams.valid && rightParams.valid;
+    }
+
+    bool XRContext::locateYawFlattenedHead(XrTime time, XrPosef &outPose) const {
         XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
         if (XR_FAILED(xrLocateSpace(viewSpace, baseSpace, time, &location))) {
-            return;
+            return false;
         }
 
         constexpr XrSpaceLocationFlags required = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
         if ((location.locationFlags & required) != required) {
-            return;
+            return false;
         }
 
-        // Yaw-flatten the view orientation so the screen stays upright.
+        // Yaw-flatten the view orientation so the recentered frame is upright.
         const XrQuaternionf &q = location.pose.orientation;
         const float yaw = std::atan2(2.0f * (q.x * q.z + q.w * q.y), 1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+        outPose.orientation = { 0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f) };
+        outPose.position = location.pose.position;
+        return true;
+    }
+
+    // Recreates the quad and anchor spaces from one located head pose so both
+    // stay coherent. Returns false (leaving the request pending) if the pose
+    // could not be located yet.
+    bool XRContext::applyRecenter(XrTime time) {
         XrPosef pose;
-        pose.orientation = { 0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f) };
-        pose.position = location.pose.position;
+        if (!locateYawFlattenedHead(time, pose)) {
+            return false;
+        }
 
         XrReferenceSpaceCreateInfo spaceInfo = { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
         spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
         spaceInfo.poseInReferenceSpace = pose;
-        XrSpace newSpace = XR_NULL_HANDLE;
-        if (XR_FAILED(xrCreateReferenceSpace(session, &spaceInfo, &newSpace))) {
-            return;
+        XrSpace newQuadSpace = XR_NULL_HANDLE;
+        XrSpace newAnchorSpace = XR_NULL_HANDLE;
+        if (XR_FAILED(xrCreateReferenceSpace(session, &spaceInfo, &newQuadSpace))) {
+            return false;
+        }
+        if (XR_FAILED(xrCreateReferenceSpace(session, &spaceInfo, &newAnchorSpace))) {
+            xrDestroySpace(newQuadSpace);
+            return false;
         }
 
         const std::lock_guard<std::mutex> lock(quadMutex);
         if (quadSpace != XR_NULL_HANDLE) {
             xrDestroySpace(quadSpace);
         }
-        quadSpace = newSpace;
+        if (anchorSpace != XR_NULL_HANDLE) {
+            xrDestroySpace(anchorSpace);
+        }
+        quadSpace = newQuadSpace;
+        anchorSpace = newAnchorSpace;
+        return true;
     }
 
     bool XRContext::createActions() {
@@ -535,6 +617,8 @@ namespace RT64 {
         stereoReady = false;
         stereoImageAcquired = false;
         stereoPendingRelease = false;
+        submittedStereoMeta.valid = false;
+        pendingStereoMeta.valid = false;
         stereoImages.clear();
         if (stereoSwapchain != XR_NULL_HANDLE) {
             xrDestroySwapchain(stereoSwapchain);
@@ -545,7 +629,7 @@ namespace RT64 {
         stereoFormat = 0;
     }
 
-    bool XRContext::pt_recordStereoCopy(ID3D12GraphicsCommandList *commandList, ID3D12Resource *leftTexture, ID3D12Resource *rightTexture, uint32_t width, uint32_t height) {
+    bool XRContext::pt_recordStereoCopy(ID3D12GraphicsCommandList *commandList, ID3D12Resource *leftTexture, ID3D12Resource *rightTexture, uint32_t width, uint32_t height, const XRStereoFrameMeta *meta) {
         if (!sessionRunning || (commandList == nullptr) || (leftTexture == nullptr) || (rightTexture == nullptr)) {
             return false;
         }
@@ -601,6 +685,12 @@ namespace RT64 {
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         commandList->ResourceBarrier(1, &barrier);
 
+        if (meta != nullptr) {
+            pendingStereoMeta = *meta;
+        }
+        else {
+            pendingStereoMeta.valid = false;
+        }
         stereoPendingRelease = true;
         return true;
     }
@@ -610,11 +700,17 @@ namespace RT64 {
             return;
         }
 
+        // Release and metadata publish are one atomic step under quadMutex so
+        // xrEndFrame always pairs the newest released image with its own poses
+        // (a release landing between the frame loop's checks would otherwise
+        // pair a newer image with older submit state — visible as world swim).
+        const std::lock_guard<std::mutex> lock(quadMutex);
         XrSwapchainImageReleaseInfo releaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
         if (XR_SUCCEEDED(xrReleaseSwapchainImage(stereoSwapchain, &releaseInfo))) {
             stereoImageAcquired = false;
             stereoPendingRelease = false;
             stereoReady = true;
+            submittedStereoMeta = pendingStereoMeta;
             stereoSerial = ++layerSerial;
         }
     }
@@ -739,6 +835,15 @@ namespace RT64 {
                 sessionRunning = false;
                 quitRequested = true;
                 break;
+            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
+                // The runtime rebased its LOCAL space (e.g. the user recentered
+                // from the system menu): re-anchor everything to the live head.
+                const auto &spaceEvent = *reinterpret_cast<XrEventDataReferenceSpaceChangePending *>(&event);
+                if (spaceEvent.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
+                    recenterRequested = true;
+                }
+                break;
+            }
             default:
                 break;
             }
@@ -840,21 +945,45 @@ namespace RT64 {
             }
             tickCondition.notify_all();
 
-            // Refresh the head-relative eye views for stereo rendering.
+            // Refresh the eye views for stereo rendering. Tracking off: located
+            // head-relative (VIEW space) = pure IPD offsets. Tracking on:
+            // located in the recenterable anchor space, plus the head position
+            // for the orientation-only subtraction.
             if (stereoEnabled) {
+                const bool tracking = headTrackingEnabled;
                 XrViewLocateInfo locateInfo = { XR_TYPE_VIEW_LOCATE_INFO };
                 locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                 locateInfo.displayTime = frameState.predictedDisplayTime;
-                locateInfo.space = viewSpace;
+                locateInfo.space = tracking ? anchorSpace : viewSpace;
                 XrViewState viewState = { XR_TYPE_VIEW_STATE };
                 XrView views[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
                 uint32_t viewCount = 0;
                 if (XR_SUCCEEDED(xrLocateViews(session, &locateInfo, &viewState, 2, &viewCount, views)) && (viewCount == 2)) {
                     constexpr XrViewStateFlags required = XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT;
+                    bool valid = (viewState.viewStateFlags & required) == required;
+
+                    float headPos[3] = {};
+                    if (tracking && valid) {
+                        XrSpaceLocation headLocation = { XR_TYPE_SPACE_LOCATION };
+                        constexpr XrSpaceLocationFlags headRequired = XR_SPACE_LOCATION_POSITION_VALID_BIT;
+                        if (XR_SUCCEEDED(xrLocateSpace(viewSpace, anchorSpace, frameState.predictedDisplayTime, &headLocation)) &&
+                            ((headLocation.locationFlags & headRequired) == headRequired)) {
+                            headPos[0] = headLocation.pose.position.x;
+                            headPos[1] = headLocation.pose.position.y;
+                            headPos[2] = headLocation.pose.position.z;
+                        }
+                        else {
+                            valid = false;
+                        }
+                    }
+
                     const std::lock_guard<std::mutex> lock(eyeViewsMutex);
-                    eyeViewsValid = (viewState.viewStateFlags & required) == required;
+                    eyeViewsValid = valid;
                     eyeViews[0] = views[0];
                     eyeViews[1] = views[1];
+                    headPosition[0] = headPos[0];
+                    headPosition[1] = headPos[1];
+                    headPosition[2] = headPos[2];
                 }
             }
 
@@ -865,16 +994,21 @@ namespace RT64 {
 
             syncActions(frameState.predictedDisplayTime);
 
-            // Recenter the cinema screen on left-stick-click (edge) or host request.
+            // Recenter (cinema screen + head-tracking anchor together) on
+            // left-stick-click (edge) or host/runtime request. The request
+            // stays pending until a head pose can actually be located.
             bool recenterClick = false;
             {
                 const std::lock_guard<std::mutex> lock(snapshotMutex);
                 recenterClick = snapshot.left.stickClick;
             }
-            if ((recenterClick && !prevRecenterClick) || recenterRequested.exchange(false)) {
-                recenterQuadSpace(frameState.predictedDisplayTime);
+            if (recenterClick && !prevRecenterClick) {
+                recenterRequested = true;
             }
             prevRecenterClick = recenterClick;
+            if (recenterRequested && applyRecenter(frameState.predictedDisplayTime)) {
+                recenterRequested = false;
+            }
 
             // Submit the stereo projection layer when eye frames are flowing;
             // otherwise fall back to the cinema quad. In both cases the
@@ -916,16 +1050,34 @@ namespace RT64 {
                         gameFov.angleUp = std::atan(tanY);
                     }
 
+                    // Echo the poses the released frame was rendered with (the
+                    // anti-swim invariant once head poses are dynamic); fall
+                    // back to live eye samples before the first metadata.
                     const std::lock_guard<std::mutex> eyeLock(eyeViewsMutex);
                     for (uint32_t eye = 0; eye < 2; eye++) {
-                        projectionViews[eye].pose = eyeViews[eye].pose;
+                        if (submittedStereoMeta.valid) {
+                            projectionViews[eye].pose.orientation = {
+                                submittedStereoMeta.poseOrientation[eye][0],
+                                submittedStereoMeta.poseOrientation[eye][1],
+                                submittedStereoMeta.poseOrientation[eye][2],
+                                submittedStereoMeta.poseOrientation[eye][3],
+                            };
+                            projectionViews[eye].pose.position = {
+                                submittedStereoMeta.posePosition[eye][0],
+                                submittedStereoMeta.posePosition[eye][1],
+                                submittedStereoMeta.posePosition[eye][2],
+                            };
+                        }
+                        else {
+                            projectionViews[eye].pose = eyeViews[eye].pose;
+                        }
                         projectionViews[eye].fov = haveGameFov ? gameFov : eyeViews[eye].fov;
                         projectionViews[eye].subImage.swapchain = stereoSwapchain;
                         projectionViews[eye].subImage.imageRect = { { 0, 0 }, { int32_t(stereoWidth), int32_t(stereoHeight) } };
                         projectionViews[eye].subImage.imageArrayIndex = eye;
                     }
                     projectionLayer.layerFlags = 0;
-                    projectionLayer.space = viewSpace;
+                    projectionLayer.space = headTrackingEnabled ? anchorSpace : viewSpace;
                     projectionLayer.viewCount = 2;
                     projectionLayer.views = projectionViews;
                     layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projectionLayer);
@@ -964,7 +1116,7 @@ namespace RT64 {
         destroyStereoSwapchain();
 #   endif
 
-        for (XrSpace *space : { &baseSpace, &viewSpace, &quadSpace }) {
+        for (XrSpace *space : { &baseSpace, &viewSpace, &quadSpace, &anchorSpace }) {
             if (*space != XR_NULL_HANDLE) {
                 xrDestroySpace(*space);
                 *space = XR_NULL_HANDLE;
