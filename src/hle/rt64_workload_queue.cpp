@@ -322,14 +322,25 @@ namespace RT64 {
             projParams.prevFrameWeight = prevFrameWeight;
             projParams.aspectRatioScale = workloadConfig.aspectRatioScale;
             projParams.eyeOverrideEnabled = eyeParams.enabled;
+            float gameTanX = 0.0f;
+            float gameTanY = 0.0f;
             if (eyeParams.enabled) {
                 projParams.eyeViewOffset = eyeParams.viewOffset;
                 projParams.eyeTanLeft = eyeParams.tanLeft;
                 projParams.eyeTanRight = eyeParams.tanRight;
                 projParams.eyeTanDown = eyeParams.tanDown;
                 projParams.eyeTanUp = eyeParams.tanUp;
+                projParams.outTanX = &gameTanX;
+                projParams.outTanY = &gameTanY;
             }
             projectionProcessor.process(projParams);
+#           ifdef RT64_XR_SUPPORT
+            // Tell the XR layer the game's FOV so the projection layer echoes
+            // the frustum the eyes were rendered with (stereo fusion fix).
+            if (eyeParams.enabled && (ext.xrContext != nullptr) && (gameTanX > 0.0f) && (gameTanY > 0.0f)) {
+                ext.xrContext->setRenderedFov(gameTanX, gameTanY);
+            }
+#           endif
             projectionProcessor.upload(projParams);
             uploadProjections = true;
         }

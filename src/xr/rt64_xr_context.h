@@ -133,6 +133,9 @@ namespace RT64 {
         bool isStereoEnabled() const;
         void setUnitsPerMeter(float units);
         XREyeParams buildEyeParams(uint32_t eyeIndex) const; // 0 = left, 1 = right
+        // The game's symmetric FOV half-tangents, so the projection layer
+        // submits a frustum matching what was rendered (stereo fusion).
+        void setRenderedFov(float tanX, float tanY);
 
     private:
         void frameLoop();
@@ -226,6 +229,8 @@ namespace RT64 {
         bool eyeViewsValid = false;
         std::atomic<bool> stereoEnabled{ false };
         std::atomic<float> unitsPerMeter{ 100.0f };
+        std::atomic<float> renderedTanX{ 0.0f };
+        std::atomic<float> renderedTanY{ 0.0f };
 
         std::thread frameThread;
         std::atomic<bool> quitRequested{ false };

@@ -187,6 +187,11 @@ namespace RT64 {
         unitsPerMeter = units;
     }
 
+    void XRContext::setRenderedFov(float tanX, float tanY) {
+        renderedTanX = tanX;
+        renderedTanY = tanY;
+    }
+
     XREyeParams XRContext::buildEyeParams(uint32_t eyeIndex) const {
         XREyeParams params;
         if ((eyeIndex > 1) || !isStereoEnabled()) {
@@ -896,10 +901,25 @@ namespace RT64 {
                     // the frames were rendered with (static IPD geometry, so
                     // the current sample echoes the rendered pose). World
                     // stabilization arrives with head tracking in M4.
+                    // Submit the FOV the eyes were actually rendered with (the
+                    // game's symmetric frustum), not the runtime's — otherwise
+                    // the compositor stretches each eye to a different frustum
+                    // and the images won't fuse (double vision).
+                    const float tanX = renderedTanX.load();
+                    const float tanY = renderedTanY.load();
+                    const bool haveGameFov = (tanX > 0.0f) && (tanY > 0.0f);
+                    XrFovf gameFov;
+                    if (haveGameFov) {
+                        gameFov.angleLeft = -std::atan(tanX);
+                        gameFov.angleRight = std::atan(tanX);
+                        gameFov.angleDown = -std::atan(tanY);
+                        gameFov.angleUp = std::atan(tanY);
+                    }
+
                     const std::lock_guard<std::mutex> eyeLock(eyeViewsMutex);
                     for (uint32_t eye = 0; eye < 2; eye++) {
                         projectionViews[eye].pose = eyeViews[eye].pose;
-                        projectionViews[eye].fov = eyeViews[eye].fov;
+                        projectionViews[eye].fov = haveGameFov ? gameFov : eyeViews[eye].fov;
                         projectionViews[eye].subImage.swapchain = stereoSwapchain;
                         projectionViews[eye].subImage.imageRect = { { 0, 0 }, { int32_t(stereoWidth), int32_t(stereoHeight) } };
                         projectionViews[eye].subImage.imageArrayIndex = eye;

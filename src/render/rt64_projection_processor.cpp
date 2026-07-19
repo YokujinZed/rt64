@@ -4,6 +4,8 @@
 
 #include "rt64_projection_processor.h"
 
+#include <cmath>
+
 #include "common/rt64_math.h"
 #include "hle/rt64_workload_queue.h"
 
@@ -150,6 +152,17 @@ namespace RT64 {
             if (p.eyeOverrideEnabled && (proj.type == Projection::Type::Perspective) && !workload.debuggerCamera.enabled) {
                 viewMatrix = hlslpp::mul(viewMatrix, p.eyeViewOffset);
                 prevViewTransform = hlslpp::mul(prevViewTransform, p.eyeViewOffset);
+
+                // Report the game's symmetric FOV so the XR projection layer
+                // echoes the frustum it was rendered with (m[0][0]/m[1][1] are
+                // the x/y scales = cot(halfFov)).
+                if ((p.outTanX != nullptr) && (p.outTanY != nullptr)) {
+                    const float tanY = std::tan(0.5f * fovFromProj(projMatrix));
+                    const float scaleX = std::abs(projMatrix[0][0]);
+                    const float scaleY = std::abs(projMatrix[1][1]);
+                    *p.outTanY = tanY;
+                    *p.outTanX = (scaleX > 1e-6f) ? (tanY * scaleY / scaleX) : tanY;
+                }
             }
 
             viewProjMatrix = hlslpp::mul(viewMatrix, projMatrix);

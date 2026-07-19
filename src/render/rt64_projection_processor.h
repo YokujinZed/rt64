@@ -31,6 +31,11 @@ namespace RT64 {
             float eyeTanRight = 1.0f;
             float eyeTanDown = -1.0f;
             float eyeTanUp = 1.0f;
+            // Output: the game projection's symmetric half-tangents, so the XR
+            // layer submits an FOV matching what was actually rendered (the
+            // fix for stereo double vision). Written when eyeOverrideEnabled.
+            float *outTanX = nullptr;
+            float *outTanY = nullptr;
         };
 
         ProjectionProcessor();
