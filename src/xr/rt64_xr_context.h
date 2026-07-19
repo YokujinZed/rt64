@@ -98,6 +98,12 @@ namespace RT64 {
         // been submitted and its fence waited on (GPU-complete).
         void pt_releaseFrame();
 
+        // Stereo variants: an arraySize=2 swapchain fed by two eye images of
+        // identical size/format (matched to the sources' DXGI format). Same
+        // contract as the mono pair above.
+        bool pt_recordStereoCopy(ID3D12GraphicsCommandList *commandList, ID3D12Resource *leftTexture, ID3D12Resource *rightTexture, uint32_t width, uint32_t height);
+        void pt_releaseStereoFrame();
+
         // Blocks until the frame loop's next xrWaitFrame tick (or a short
         // timeout / session death). Returns true if a tick paced this call.
         bool pt_waitForDisplayTick();
@@ -139,6 +145,8 @@ namespace RT64 {
 #   ifdef _WIN32
         bool ensureQuadSwapchain(uint32_t width, uint32_t height);
         void destroyQuadSwapchain();
+        bool ensureStereoSwapchain(uint32_t width, uint32_t height, int64_t format);
+        void destroyStereoSwapchain();
 #   endif
 
         XrInstance instance = XR_NULL_HANDLE;
@@ -177,6 +185,21 @@ namespace RT64 {
         uint32_t quadImageIndex = 0;
         bool quadPendingRelease = false;
         std::atomic<bool> quadReady{ false };
+
+        // Stereo projection swapchain (arraySize = 2), same ownership rules as
+        // the quad swapchain: handles under quadMutex, image cycle on the
+        // present thread only.
+        XrSwapchain stereoSwapchain = XR_NULL_HANDLE;
+        int64_t stereoFormat = 0;
+        uint32_t stereoWidth = 0;
+        uint32_t stereoHeight = 0;
+#   ifdef _WIN32
+        std::vector<XrSwapchainImageD3D12KHR> stereoImages;
+#   endif
+        bool stereoImageAcquired = false;
+        uint32_t stereoImageIndex = 0;
+        bool stereoPendingRelease = false;
+        std::atomic<bool> stereoReady{ false };
 
         // Display pacing ticks, one per xrWaitFrame.
         std::mutex tickMutex;

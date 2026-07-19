@@ -58,6 +58,16 @@ namespace RT64 {
         std::condition_variable interpolatedCondition;
         std::mutex workloadMutex;
 
+#   ifdef RT64_XR_SUPPORT
+        // Stereo (VR): right-eye targets indexed by display frame. No extra
+        // sync protocol: the workload thread renders the right eye before the
+        // left (same submissions and fences), so wherever the existing counters
+        // say the left frame is presentable/reusable, the right one is too.
+        // stereoFramesActive is written under interpolatedMutex.
+        std::vector<std::unique_ptr<RenderTarget>> stereoRightEyeTargets;
+        bool stereoFramesActive = false;
+#   endif
+
         void setSwapChainSize(uint32_t width, uint32_t height) {
             std::scoped_lock<std::mutex> configurationLock(configurationMutex);
             if ((swapChainWidth != width) || (swapChainHeight != height)) {

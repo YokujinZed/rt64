@@ -365,17 +365,54 @@ namespace RT64 {
                     }
 
 #           if defined(RT64_XR_SUPPORT) && defined(_WIN64)
-                    // VR cinema layer: mirror the finished frame into the XR
-                    // swapchain on this same command list. Plume barriers for
-                    // the plume texture, raw D3D12 barriers inside the XR copy.
+                    // VR: mirror this frame into the XR compositor on the same
+                    // command list. Stereo (both eye targets) when eye frames
+                    // are flowing, otherwise the M2 cinema copy of the window.
+                    // Plume barriers for plume textures, raw D3D12 barriers
+                    // inside the XR copy helpers.
                     bool xrCopyRecorded = false;
+                    bool xrStereoRecorded = false;
                     if ((ext.xrContext != nullptr) && (ext.createdGraphicsAPI == UserConfiguration::GraphicsAPI::D3D12)) {
-                        commandList->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COPY_SOURCE));
-                        xrCopyRecorded = ext.xrContext->pt_recordFrameCopy(
-                            static_cast<plume::D3D12CommandList *>(commandList)->d3d,
-                            static_cast<plume::D3D12Texture *>(swapChainTexture)->d3d,
-                            ext.swapChain->getWidth(), ext.swapChain->getHeight());
-                        commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
+                        RenderTarget *rightEyeTarget = nullptr;
+                        {
+                            std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
+                            if (ext.sharedResources->stereoFramesActive && (colorTarget != nullptr) && (uint32_t(i) < ext.sharedResources->stereoRightEyeTargets.size())) {
+                                rightEyeTarget = ext.sharedResources->stereoRightEyeTargets[i].get();
+                            }
+                        }
+
+                        if ((rightEyeTarget != nullptr) && (rightEyeTarget->width == colorTarget->width) && (rightEyeTarget->height == colorTarget->height)) {
+                            // Left rides the normal path; it was already resolved
+                            // for the VI blit unless the downsampled route ran.
+                            if (colorTarget->downsampleMultiplier > 1) {
+                                colorTarget->resolveTarget(ext.presentGraphicsWorker, ext.shaderLibrary);
+                            }
+                            rightEyeTarget->resolveTarget(ext.presentGraphicsWorker, ext.shaderLibrary);
+
+                            RenderTexture *leftTexture = colorTarget->getResolvedTexture();
+                            RenderTexture *rightTexture = rightEyeTarget->getResolvedTexture();
+                            commandList->barriers(RenderBarrierStage::COPY, {
+                                RenderTextureBarrier(leftTexture, RenderTextureLayout::COPY_SOURCE),
+                                RenderTextureBarrier(rightTexture, RenderTextureLayout::COPY_SOURCE),
+                            });
+                            xrStereoRecorded = ext.xrContext->pt_recordStereoCopy(
+                                static_cast<plume::D3D12CommandList *>(commandList)->d3d,
+                                static_cast<plume::D3D12Texture *>(leftTexture)->d3d,
+                                static_cast<plume::D3D12Texture *>(rightTexture)->d3d,
+                                colorTarget->width, colorTarget->height);
+                            commandList->barriers(RenderBarrierStage::GRAPHICS, {
+                                RenderTextureBarrier(leftTexture, RenderTextureLayout::SHADER_READ),
+                                RenderTextureBarrier(rightTexture, RenderTextureLayout::COLOR_WRITE),
+                            });
+                        }
+                        else {
+                            commandList->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COPY_SOURCE));
+                            xrCopyRecorded = ext.xrContext->pt_recordFrameCopy(
+                                static_cast<plume::D3D12CommandList *>(commandList)->d3d,
+                                static_cast<plume::D3D12Texture *>(swapChainTexture)->d3d,
+                                ext.swapChain->getWidth(), ext.swapChain->getHeight());
+                            commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
+                        }
                     }
 #           endif
 
@@ -388,10 +425,13 @@ namespace RT64 {
                     ext.presentGraphicsWorker->wait();
 
 #           if defined(RT64_XR_SUPPORT) && defined(_WIN64)
-                    // The fence wait above makes the copy GPU-complete, which
+                    // The fence wait above makes the copies GPU-complete, which
                     // satisfies the release-before-xrEndFrame ordering.
                     if (xrCopyRecorded) {
                         ext.xrContext->pt_releaseFrame();
+                    }
+                    if (xrStereoRecorded) {
+                        ext.xrContext->pt_releaseStereoFrame();
                     }
 #           endif
                 }

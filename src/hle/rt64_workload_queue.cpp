@@ -1078,6 +1078,26 @@ namespace RT64 {
                         interpolatedTargets[i] = std::make_unique<RenderTarget>(interpolationTargetKey.address, Framebuffer::Type::Color, RenderMultisampling(), usesHDR);
                     }
                 }
+
+#           ifdef RT64_XR_SUPPORT
+                // Stereo: one right-eye target per display frame (the left eye
+                // rides the normal path and the window mirror).
+                const bool stereoActive = (ext.xrContext != nullptr) && ext.xrContext->isStereoEnabled() && !interpolationTargetKey.isEmpty();
+                auto &rightEyeTargets = ext.sharedResources->stereoRightEyeTargets;
+                {
+                    // The present thread indexes this vector under the same
+                    // mutex, so growth is safe against a present in flight.
+                    std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
+                    if (stereoActive && (rightEyeTargets.size() < displayFrames)) {
+                        uint32_t previousSize = uint32_t(rightEyeTargets.size());
+                        rightEyeTargets.resize(displayFrames);
+                        for (uint32_t i = previousSize; i < displayFrames; i++) {
+                            rightEyeTargets[i] = std::make_unique<RenderTarget>(interpolationTargetKey.address, Framebuffer::Type::Color, RenderMultisampling(), usesHDR);
+                        }
+                    }
+                    ext.sharedResources->stereoFramesActive = stereoActive;
+                }
+#           endif
                 
                 const int64_t originalTimeMicro = (workload.viOriginalRate > 0) ? (1000000 / workload.viOriginalRate) : 0;
                 const int64_t setupTimeMicro = workloadTimer.elapsedMicroseconds();
@@ -1142,22 +1162,42 @@ namespace RT64 {
 
                     EyeRenderParams eyeParams;
 #           ifdef RT64_XR_SUPPORT
+                    auto toEyeRenderParams = [](const XREyeParams &xrEye) {
+                        EyeRenderParams out;
+                        out.enabled = true;
+                        out.viewOffset = hlslpp::float4x4(
+                            xrEye.viewOffset[0][0], xrEye.viewOffset[0][1], xrEye.viewOffset[0][2], xrEye.viewOffset[0][3],
+                            xrEye.viewOffset[1][0], xrEye.viewOffset[1][1], xrEye.viewOffset[1][2], xrEye.viewOffset[1][3],
+                            xrEye.viewOffset[2][0], xrEye.viewOffset[2][1], xrEye.viewOffset[2][2], xrEye.viewOffset[2][3],
+                            xrEye.viewOffset[3][0], xrEye.viewOffset[3][1], xrEye.viewOffset[3][2], xrEye.viewOffset[3][3]);
+                        out.tanLeft = xrEye.tanLeft;
+                        out.tanRight = xrEye.tanRight;
+                        out.tanDown = xrEye.tanDown;
+                        out.tanUp = xrEye.tanUp;
+                        return out;
+                    };
+
+                    if (stereoActive) {
+                        const XREyeParams leftXr = ext.xrContext->buildEyeParams(0);
+                        const XREyeParams rightXr = ext.xrContext->buildEyeParams(1);
+                        if (leftXr.valid && rightXr.valid && (frame < rightEyeTargets.size())) {
+                            // Right eye first into its dedicated target; when it
+                            // is done, everything the left frame's counters
+                            // guarantee applies to it as well.
+                            const EyeRenderParams rightParams = toEyeRenderParams(rightXr);
+                            threadRenderFrame(curFrame, prevFrame, workloadConfig, workload.debuggerRenderer, workload.debuggerCamera, curFrameWeight, prevFrameWeight, deltaTimeMs,
+                                interpolationTargetKey, interpolationTargetFbPairIndex, rightEyeTargets[frame].get(), 0x100 + frame, velocityUploaderUsed, false, tileInterpolationUsed, lookAtInterpolationUsed,
+                                rightParams);
+                            eyeParams = toEyeRenderParams(leftXr);
+                        }
+                    }
                     // Stereo bring-up aid: RT64_XR_DEBUG_EYE=0|1 renders the
                     // flat window through that eye's frustum so the override is
                     // verifiable on the monitor before any XR compositing.
-                    if ((ext.xrContext != nullptr) && (debugEyeIndex >= 0)) {
+                    else if ((ext.xrContext != nullptr) && (debugEyeIndex >= 0)) {
                         const XREyeParams xrEye = ext.xrContext->buildEyeParams(uint32_t(debugEyeIndex));
                         if (xrEye.valid) {
-                            eyeParams.enabled = true;
-                            eyeParams.viewOffset = hlslpp::float4x4(
-                                xrEye.viewOffset[0][0], xrEye.viewOffset[0][1], xrEye.viewOffset[0][2], xrEye.viewOffset[0][3],
-                                xrEye.viewOffset[1][0], xrEye.viewOffset[1][1], xrEye.viewOffset[1][2], xrEye.viewOffset[1][3],
-                                xrEye.viewOffset[2][0], xrEye.viewOffset[2][1], xrEye.viewOffset[2][2], xrEye.viewOffset[2][3],
-                                xrEye.viewOffset[3][0], xrEye.viewOffset[3][1], xrEye.viewOffset[3][2], xrEye.viewOffset[3][3]);
-                            eyeParams.tanLeft = xrEye.tanLeft;
-                            eyeParams.tanRight = xrEye.tanRight;
-                            eyeParams.tanDown = xrEye.tanDown;
-                            eyeParams.tanUp = xrEye.tanUp;
+                            eyeParams = toEyeRenderParams(xrEye);
                         }
                     }
 #           endif

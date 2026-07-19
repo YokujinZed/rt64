@@ -458,6 +458,150 @@ namespace RT64 {
         quadHeight = 0;
     }
 
+    bool XRContext::ensureStereoSwapchain(uint32_t width, uint32_t height, int64_t format) {
+        if ((stereoSwapchain != XR_NULL_HANDLE) && (width == stereoWidth) && (height == stereoHeight) && (format == stereoFormat)) {
+            return true;
+        }
+
+        if ((width == 0) || (height == 0)) {
+            return false;
+        }
+
+        destroyStereoSwapchain();
+
+        // The eye images are raw-copied, so the swapchain format must match the
+        // source format family exactly. Verify the runtime offers it.
+        uint32_t formatCount = 0;
+        xrEnumerateSwapchainFormats(session, 0, &formatCount, nullptr);
+        std::vector<int64_t> formats(formatCount);
+        xrEnumerateSwapchainFormats(session, formatCount, &formatCount, formats.data());
+        bool formatAvailable = false;
+        for (int64_t have : formats) {
+            formatAvailable = formatAvailable || (have == format);
+        }
+
+        if (!formatAvailable) {
+            fprintf(stderr, "XR: runtime does not offer swapchain format %" PRId64 " for stereo; stereo layer disabled.\n", format);
+            return false;
+        }
+
+        XrSwapchainCreateInfo createInfo = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
+        createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+        createInfo.format = format;
+        createInfo.sampleCount = 1;
+        createInfo.width = width;
+        createInfo.height = height;
+        createInfo.faceCount = 1;
+        createInfo.arraySize = 2;
+        createInfo.mipCount = 1;
+
+        XrSwapchain newSwapchain = XR_NULL_HANDLE;
+        if (!xrCheck(instance, xrCreateSwapchain(session, &createInfo, &newSwapchain), "xrCreateSwapchain(stereo)")) {
+            return false;
+        }
+
+        uint32_t imageCount = 0;
+        xrEnumerateSwapchainImages(newSwapchain, 0, &imageCount, nullptr);
+        std::vector<XrSwapchainImageD3D12KHR> images(imageCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR });
+        XrResult result = xrEnumerateSwapchainImages(newSwapchain, imageCount, &imageCount, reinterpret_cast<XrSwapchainImageBaseHeader *>(images.data()));
+        if (!xrCheck(instance, result, "xrEnumerateSwapchainImages(stereo)")) {
+            xrDestroySwapchain(newSwapchain);
+            return false;
+        }
+
+        const std::lock_guard<std::mutex> lock(quadMutex);
+        stereoSwapchain = newSwapchain;
+        stereoImages = std::move(images);
+        stereoWidth = width;
+        stereoHeight = height;
+        stereoFormat = format;
+        fprintf(stderr, "XR: stereo swapchain %ux%ux2 (%u images, format %" PRId64 ").\n", width, height, imageCount, format);
+        return true;
+    }
+
+    void XRContext::destroyStereoSwapchain() {
+        const std::lock_guard<std::mutex> lock(quadMutex);
+        stereoReady = false;
+        stereoImageAcquired = false;
+        stereoPendingRelease = false;
+        stereoImages.clear();
+        if (stereoSwapchain != XR_NULL_HANDLE) {
+            xrDestroySwapchain(stereoSwapchain);
+            stereoSwapchain = XR_NULL_HANDLE;
+        }
+        stereoWidth = 0;
+        stereoHeight = 0;
+        stereoFormat = 0;
+    }
+
+    bool XRContext::pt_recordStereoCopy(ID3D12GraphicsCommandList *commandList, ID3D12Resource *leftTexture, ID3D12Resource *rightTexture, uint32_t width, uint32_t height) {
+        if (!sessionRunning || (commandList == nullptr) || (leftTexture == nullptr) || (rightTexture == nullptr)) {
+            return false;
+        }
+
+        const DXGI_FORMAT sourceFormat = leftTexture->GetDesc().Format;
+        if (!ensureStereoSwapchain(width, height, int64_t(sourceFormat))) {
+            return false;
+        }
+
+        if (!stereoImageAcquired) {
+            XrSwapchainImageAcquireInfo acquireInfo = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+            if (XR_FAILED(xrAcquireSwapchainImage(stereoSwapchain, &acquireInfo, &stereoImageIndex))) {
+                return false;
+            }
+            stereoImageAcquired = true;
+        }
+
+        XrSwapchainImageWaitInfo waitInfo = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+        waitInfo.timeout = 100'000'000; // 100ms
+        if (xrWaitSwapchainImage(stereoSwapchain, &waitInfo) != XR_SUCCESS) {
+            return false;
+        }
+
+        ID3D12Resource *destTexture = stereoImages[stereoImageIndex].texture;
+
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = destTexture;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        commandList->ResourceBarrier(1, &barrier);
+
+        ID3D12Resource *sources[2] = { leftTexture, rightTexture };
+        for (uint32_t eye = 0; eye < 2; eye++) {
+            D3D12_TEXTURE_COPY_LOCATION destLocation = {};
+            destLocation.pResource = destTexture;
+            destLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            destLocation.SubresourceIndex = eye; // mipCount 1: subresource == array slice
+            D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+            srcLocation.pResource = sources[eye];
+            srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            srcLocation.SubresourceIndex = 0;
+            commandList->CopyTextureRegion(&destLocation, 0, 0, 0, &srcLocation, nullptr);
+        }
+
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        commandList->ResourceBarrier(1, &barrier);
+
+        stereoPendingRelease = true;
+        return true;
+    }
+
+    void XRContext::pt_releaseStereoFrame() {
+        if (!stereoPendingRelease) {
+            return;
+        }
+
+        XrSwapchainImageReleaseInfo releaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        if (XR_SUCCEEDED(xrReleaseSwapchainImage(stereoSwapchain, &releaseInfo))) {
+            stereoImageAcquired = false;
+            stereoPendingRelease = false;
+            stereoReady = true;
+        }
+    }
+
     bool XRContext::pt_recordFrameCopy(ID3D12GraphicsCommandList *commandList, ID3D12Resource *sourceTexture, uint32_t width, uint32_t height) {
         if (!sessionRunning || (commandList == nullptr) || (sourceTexture == nullptr)) {
             return false;
@@ -714,10 +858,13 @@ namespace RT64 {
             }
             prevRecenterClick = recenterClick;
 
-            // Submit the cinema quad when a frame has been released to it; the
-            // compositor keeps reprojecting the last released image, so this
-            // holds a stable screen through menus, loads and static frames.
+            // Submit the stereo projection layer when eye frames are flowing;
+            // otherwise fall back to the cinema quad. In both cases the
+            // compositor keeps showing the last released image, holding a
+            // stable picture through menus, loads and static frames.
             XrCompositionLayerQuad quadLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
+            XrCompositionLayerProjection projectionLayer = { XR_TYPE_COMPOSITION_LAYER_PROJECTION };
+            XrCompositionLayerProjectionView projectionViews[2] = { { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW }, { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
             const XrCompositionLayerBaseHeader *layers[1] = {};
             uint32_t layerCount = 0;
 
@@ -727,7 +874,28 @@ namespace RT64 {
 
             {
                 const std::lock_guard<std::mutex> lock(quadMutex);
-                if (quadReady && frameState.shouldRender && (quadSwapchain != XR_NULL_HANDLE)) {
+                if (stereoReady && frameState.shouldRender && (stereoSwapchain != XR_NULL_HANDLE)) {
+                    // M3 stereo is head-relative: the layer lives in VIEW space
+                    // and the per-eye poses are the head-relative eye offsets
+                    // the frames were rendered with (static IPD geometry, so
+                    // the current sample echoes the rendered pose). World
+                    // stabilization arrives with head tracking in M4.
+                    const std::lock_guard<std::mutex> eyeLock(eyeViewsMutex);
+                    for (uint32_t eye = 0; eye < 2; eye++) {
+                        projectionViews[eye].pose = eyeViews[eye].pose;
+                        projectionViews[eye].fov = eyeViews[eye].fov;
+                        projectionViews[eye].subImage.swapchain = stereoSwapchain;
+                        projectionViews[eye].subImage.imageRect = { { 0, 0 }, { int32_t(stereoWidth), int32_t(stereoHeight) } };
+                        projectionViews[eye].subImage.imageArrayIndex = eye;
+                    }
+                    projectionLayer.layerFlags = 0;
+                    projectionLayer.space = viewSpace;
+                    projectionLayer.viewCount = 2;
+                    projectionLayer.views = projectionViews;
+                    layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader *>(&projectionLayer);
+                    layerCount = 1;
+                }
+                else if (quadReady && frameState.shouldRender && (quadSwapchain != XR_NULL_HANDLE)) {
                     quadLayer.layerFlags = 0;
                     quadLayer.space = quadSpace;
                     quadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -757,6 +925,7 @@ namespace RT64 {
     void XRContext::destroyHandles() {
 #   ifdef _WIN32
         destroyQuadSwapchain();
+        destroyStereoSwapchain();
 #   endif
 
         for (XrSpace *space : { &baseSpace, &viewSpace, &quadSpace }) {
