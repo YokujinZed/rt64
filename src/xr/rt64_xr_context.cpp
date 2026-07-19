@@ -561,8 +561,13 @@ namespace RT64 {
         XrSwapchainImageWaitInfo waitInfo = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
         waitInfo.timeout = 100'000'000; // 100ms
         if (xrWaitSwapchainImage(stereoSwapchain, &waitInfo) != XR_SUCCESS) {
+            if (!stereoTimeoutLogged) {
+                fprintf(stderr, "XR: stereo image wait failed/timed out; skipping frames until it recovers.\n");
+                stereoTimeoutLogged = true;
+            }
             return false;
         }
+        stereoTimeoutLogged = false;
 
         ID3D12Resource *destTexture = stereoImages[stereoImageIndex].texture;
 
@@ -605,6 +610,7 @@ namespace RT64 {
             stereoImageAcquired = false;
             stereoPendingRelease = false;
             stereoReady = true;
+            stereoSerial = ++layerSerial;
         }
     }
 
@@ -672,6 +678,7 @@ namespace RT64 {
             quadImageAcquired = false;
             quadPendingRelease = false;
             quadReady = true;
+            quadSerial = ++layerSerial;
         }
     }
 
@@ -880,7 +887,10 @@ namespace RT64 {
 
             {
                 const std::lock_guard<std::mutex> lock(quadMutex);
-                if (stereoReady && frameState.shouldRender && (stereoSwapchain != XR_NULL_HANDLE)) {
+                // Freshest layer wins: a stalled stereo path (scene change,
+                // size mismatch, timeout) must not hide live cinema frames.
+                const bool stereoFreshest = stereoReady && (stereoSerial >= quadSerial);
+                if (stereoFreshest && frameState.shouldRender && (stereoSwapchain != XR_NULL_HANDLE)) {
                     // M3 stereo is head-relative: the layer lives in VIEW space
                     // and the per-eye poses are the head-relative eye offsets
                     // the frames were rendered with (static IPD geometry, so

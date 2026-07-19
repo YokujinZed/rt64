@@ -381,6 +381,17 @@ namespace RT64 {
                             }
                         }
 
+                        if ((rightEyeTarget != nullptr) && ((rightEyeTarget->width != colorTarget->width) || (rightEyeTarget->height != colorTarget->height))) {
+                            // Diagnostic: identifies why stereo frames stop
+                            // (logged once per distinct size combination).
+                            static uint64_t lastLoggedSizes = 0;
+                            const uint64_t sizes = (uint64_t(colorTarget->width) << 48) ^ (uint64_t(colorTarget->height) << 32) ^ (uint64_t(rightEyeTarget->width) << 16) ^ uint64_t(rightEyeTarget->height);
+                            if (sizes != lastLoggedSizes) {
+                                fprintf(stderr, "XR: stereo skip, eye size mismatch: left %ux%u right %ux%u.\n", colorTarget->width, colorTarget->height, rightEyeTarget->width, rightEyeTarget->height);
+                                lastLoggedSizes = sizes;
+                            }
+                        }
+
                         if ((rightEyeTarget != nullptr) && (rightEyeTarget->width == colorTarget->width) && (rightEyeTarget->height == colorTarget->height)) {
                             // Left rides the normal path; it was already resolved
                             // for the VI blit unless the downsampled route ran.

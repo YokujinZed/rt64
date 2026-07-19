@@ -201,6 +201,14 @@ namespace RT64 {
         uint32_t stereoImageIndex = 0;
         bool stereoPendingRelease = false;
         std::atomic<bool> stereoReady{ false };
+        bool stereoTimeoutLogged = false;
+
+        // Freshness stamps: the frame loop submits whichever layer was fed most
+        // recently, so a stalled stereo path hands off to the live cinema copy
+        // (and back) automatically.
+        std::atomic<uint64_t> layerSerial{ 0 };
+        std::atomic<uint64_t> quadSerial{ 0 };
+        std::atomic<uint64_t> stereoSerial{ 0 };
 
         // Display pacing ticks, one per xrWaitFrame.
         std::mutex tickMutex;
