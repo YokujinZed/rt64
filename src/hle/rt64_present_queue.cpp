@@ -405,7 +405,11 @@ namespace RT64 {
                                 RenderTextureBarrier(rightTexture, RenderTextureLayout::COLOR_WRITE),
                             });
                         }
-                        else {
+
+                        // If stereo didn't produce a frame (off, unsupported
+                        // format, wait timeout), keep the cinema layer alive so
+                        // the headset always has a live picture.
+                        if (!xrStereoRecorded) {
                             commandList->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COPY_SOURCE));
                             xrCopyRecorded = ext.xrContext->pt_recordFrameCopy(
                                 static_cast<plume::D3D12CommandList *>(commandList)->d3d,

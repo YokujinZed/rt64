@@ -467,6 +467,11 @@ namespace RT64 {
             return false;
         }
 
+        // Don't re-enumerate (or re-log) a format the runtime already refused.
+        if (format == stereoRefusedFormat) {
+            return false;
+        }
+
         destroyStereoSwapchain();
 
         // The eye images are raw-copied, so the swapchain format must match the
@@ -481,7 +486,8 @@ namespace RT64 {
         }
 
         if (!formatAvailable) {
-            fprintf(stderr, "XR: runtime does not offer swapchain format %" PRId64 " for stereo; stereo layer disabled.\n", format);
+            fprintf(stderr, "XR: runtime does not offer swapchain format %" PRId64 " for stereo; stereo layer disabled (cinema fallback active).\n", format);
+            stereoRefusedFormat = format;
             return false;
         }
 

@@ -191,6 +191,7 @@ namespace RT64 {
         // present thread only.
         XrSwapchain stereoSwapchain = XR_NULL_HANDLE;
         int64_t stereoFormat = 0;
+        int64_t stereoRefusedFormat = 0;
         uint32_t stereoWidth = 0;
         uint32_t stereoHeight = 0;
 #   ifdef _WIN32
