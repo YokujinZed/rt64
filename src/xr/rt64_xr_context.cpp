@@ -210,14 +210,23 @@ namespace RT64 {
     // position (orientation-only tracking v1: the rotated IPD survives, leaning
     // does not move the camera; with tracking off headPosition is zero).
     void XRContext::buildEyeParamsFromView(const XrView &view, const float headPos[3], XREyeParams &outParams, XRStereoFrameMeta &meta, uint32_t eyeIndex) const {
-        const XrQuaternionf &q = view.pose.orientation;
         const float usedX = view.pose.position.x - headPos[0];
         const float usedY = view.pose.position.y - headPos[1];
         const float usedZ = view.pose.position.z - headPos[2];
+
+        // The game's view space differs from OpenXR's by a 180-degree rotation
+        // about X (field-verified: pitch matched while yaw and roll were
+        // mirrored). Conjugate the pose into the game convention for the
+        // RENDER matrix only — negate the y/z components of the quaternion
+        // vector part and of the translation. The metadata below keeps the
+        // true OpenXR-convention pose for the compositor.
+        XrQuaternionf q = view.pose.orientation;
+        q.y = -q.y;
+        q.z = -q.z;
         const float scale = unitsPerMeter.load();
         const float tx = usedX * scale;
-        const float ty = usedY * scale;
-        const float tz = usedZ * scale;
+        const float ty = -usedY * scale;
+        const float tz = -usedZ * scale;
 
         // Head-to-eye inverse as a row-vector matrix (v' = v * M, translation
         // in row 3). With column-convention rotation R from the quaternion and
@@ -250,13 +259,14 @@ namespace RT64 {
         outParams.tanUp = std::tan(view.fov.angleUp);
         outParams.valid = true;
 
+        // Echo the TRUE OpenXR-convention pose (not the game-converted one).
         meta.posePosition[eyeIndex][0] = usedX;
         meta.posePosition[eyeIndex][1] = usedY;
         meta.posePosition[eyeIndex][2] = usedZ;
-        meta.poseOrientation[eyeIndex][0] = q.x;
-        meta.poseOrientation[eyeIndex][1] = q.y;
-        meta.poseOrientation[eyeIndex][2] = q.z;
-        meta.poseOrientation[eyeIndex][3] = q.w;
+        meta.poseOrientation[eyeIndex][0] = view.pose.orientation.x;
+        meta.poseOrientation[eyeIndex][1] = view.pose.orientation.y;
+        meta.poseOrientation[eyeIndex][2] = view.pose.orientation.z;
+        meta.poseOrientation[eyeIndex][3] = view.pose.orientation.w;
     }
 
     XREyeParams XRContext::buildEyeParams(uint32_t eyeIndex) const {
