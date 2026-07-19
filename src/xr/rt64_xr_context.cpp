@@ -705,6 +705,16 @@ namespace RT64 {
 
         shutdownDone = true;
         quitRequested = true;
+
+        // Unblock a frame thread parked inside xrWaitFrame: ask the runtime to
+        // wind the session down (STOPPING -> xrEndSession in pollEvents ->
+        // EXITING -> loop exit). Without this, runtimes that throttle
+        // xrWaitFrame (e.g. when the stream ends) can hang the join and freeze
+        // the host's entire teardown chain.
+        if ((session != XR_NULL_HANDLE) && sessionRunning) {
+            xrRequestExitSession(session);
+        }
+
         tickCondition.notify_all();
         if (frameThread.joinable()) {
             frameThread.join();
