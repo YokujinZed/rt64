@@ -153,12 +153,19 @@ namespace RT64 {
                 if (p.eyeLevelAnchor) {
                     // Publish the level camera yaw for the follow controller
                     // (pre-eye-offset, so both eye passes agree).
-                    if (p.outCameraYaw != nullptr) {
+                    if ((p.outCameraYaw != nullptr) || (p.outCameraPos != nullptr)) {
                         const hlslpp::float4x4 invViewForYaw = hlslpp::inverse(viewMatrix);
-                        const float backX = float(invViewForYaw[2].x);
-                        const float backZ = float(invViewForYaw[2].z);
-                        if ((backX * backX + backZ * backZ) > 1e-8f) {
-                            *p.outCameraYaw = std::atan2(backX, backZ);
+                        if (p.outCameraYaw != nullptr) {
+                            const float backX = float(invViewForYaw[2].x);
+                            const float backZ = float(invViewForYaw[2].z);
+                            if ((backX * backX + backZ * backZ) > 1e-8f) {
+                                *p.outCameraYaw = std::atan2(backX, backZ);
+                            }
+                        }
+                        if (p.outCameraPos != nullptr) {
+                            p.outCameraPos[0] = float(invViewForYaw[3].x);
+                            p.outCameraPos[1] = float(invViewForYaw[3].y);
+                            p.outCameraPos[2] = float(invViewForYaw[3].z);
                         }
                     }
 

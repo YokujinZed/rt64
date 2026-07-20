@@ -43,6 +43,9 @@ namespace RT64 {
             // Output: the level camera's yaw (radians, game convention) for
             // the head-follow controller. Written when eyeLevelAnchor.
             float *outCameraYaw = nullptr;
+            // Output: the level camera's world position (game units), used to
+            // calibrate the player-pose axis mapping for first person.
+            float *outCameraPos = nullptr; // float[3]
         };
 
         ProjectionProcessor();

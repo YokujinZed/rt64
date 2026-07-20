@@ -56,6 +56,19 @@ namespace RT64 {
         uint64_t sampleCount = 0;
     };
 
+    // Raw player state from the game patch, published once per game frame.
+    // Fields are unconverted: which of f14/f16/f18 is vertical, and the yaw
+    // units, are calibration values resolved from telemetry.
+    struct XRPlayerPose {
+        bool valid = false;
+        int32_t f14 = 0;
+        int32_t f16 = 0;
+        int32_t f18 = 0;
+        int32_t yaw = 0;
+        int32_t yawAux = 0;
+        uint32_t frameSeq = 0;
+    };
+
     // Per-eye stereo parameters in renderer-friendly form: a row-vector
     // head-to-eye view offset (translation already in game units) and the
     // frustum tangent half-angles. No XR types so render code stays generic.
@@ -160,6 +173,16 @@ namespace RT64 {
         // transferred, so the player's own turns rotate the world normally.
         void setFollowInjecting(bool injecting);
         void wl_updateYawTransfer();
+
+        // First person: player pose published by the game patch (any thread),
+        // consumed on the workload thread. Telemetry logs it against the
+        // rendered camera position to solve the axis/units calibration.
+        void setPlayerPose(const XRPlayerPose &pose);
+        XRPlayerPose samplePlayerPose() const;
+        void setPoseTelemetryEnabled(bool enabled);
+        // Host-provided line sink so calibration output lands in one file.
+        void setTelemetrySink(void (*sink)(const char *));
+        void wl_logPoseTelemetry(float camX, float camY, float camZ, float camYaw);
         // Residual gaze-vs-camera yaw in degrees for the input mux (NaN if
         // unknown); generation increments per workload update.
         float sampleHeadOffsetDegrees(uint64_t &outGeneration) const;
@@ -291,6 +314,12 @@ namespace RT64 {
         std::atomic<uint64_t> headOffsetGeneration{ 0 };
         std::atomic<int> followInjectionGrace{ 0 };
         float followPrevCameraYaw = std::numeric_limits<float>::quiet_NaN(); // workload thread only
+
+        mutable std::mutex playerPoseMutex;
+        XRPlayerPose playerPose;
+        std::atomic<bool> poseTelemetryEnabled{ false };
+        void (*telemetrySink)(const char *) = nullptr;
+        uint64_t poseTelemetryCounter = 0; // workload thread only
 
         std::thread frameThread;
         std::atomic<bool> quitRequested{ false };

@@ -328,6 +328,7 @@ namespace RT64 {
             float gameTanX = 0.0f;
             float gameTanY = 0.0f;
             float gameCameraYaw = std::numeric_limits<float>::quiet_NaN();
+            float gameCameraPos[3] = { 0.0f, 0.0f, 0.0f };
             if (eyeParams.enabled) {
                 projParams.eyeViewOffset = eyeParams.viewOffset;
                 projParams.eyeTanLeft = eyeParams.tanLeft;
@@ -337,6 +338,7 @@ namespace RT64 {
                 projParams.outTanX = &gameTanX;
                 projParams.outTanY = &gameTanY;
                 projParams.outCameraYaw = &gameCameraYaw;
+                projParams.outCameraPos = gameCameraPos;
             }
             projectionProcessor.process(projParams);
 #           ifdef RT64_XR_SUPPORT
@@ -348,6 +350,7 @@ namespace RT64 {
             // And the level camera yaw for the follow controller.
             if (eyeParams.enabled && eyeParams.levelAnchor && (ext.xrContext != nullptr)) {
                 ext.xrContext->setRenderedCameraYaw(gameCameraYaw);
+                ext.xrContext->wl_logPoseTelemetry(gameCameraPos[0], gameCameraPos[1], gameCameraPos[2], gameCameraYaw);
             }
 #           endif
             projectionProcessor.upload(projParams);

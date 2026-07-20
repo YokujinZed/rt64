@@ -221,6 +221,55 @@ namespace RT64 {
         renderedCameraYaw = yawRadians;
     }
 
+    void XRContext::setPlayerPose(const XRPlayerPose &pose) {
+        const std::lock_guard<std::mutex> lock(playerPoseMutex);
+        playerPose = pose;
+    }
+
+    XRPlayerPose XRContext::samplePlayerPose() const {
+        const std::lock_guard<std::mutex> lock(playerPoseMutex);
+        return playerPose;
+    }
+
+    void XRContext::setPoseTelemetryEnabled(bool enabled) {
+        poseTelemetryEnabled = enabled;
+    }
+
+    void XRContext::setTelemetrySink(void (*sink)(const char *)) {
+        telemetrySink = sink;
+    }
+
+    // Logs the raw player fields beside the rendered camera position/yaw so the
+    // axis permutation, yaw units and eye height can be solved from a short
+    // walk instead of guessed. Workload thread only.
+    void XRContext::wl_logPoseTelemetry(float camX, float camY, float camZ, float camYaw) {
+        if (!poseTelemetryEnabled) {
+            return;
+        }
+
+        // ~1 Hz: enough to correlate, sparse enough to read.
+        if ((poseTelemetryCounter++ % 60) != 0) {
+            return;
+        }
+
+        if (telemetrySink == nullptr) {
+            return;
+        }
+
+        const XRPlayerPose pose = samplePlayerPose();
+        char line[256];
+        if (!pose.valid) {
+            snprintf(line, sizeof(line), "CAM no-player cam=(%.1f, %.1f, %.1f) camYawDeg=%.1f",
+                camX, camY, camZ, camYaw * 57.29578f);
+        }
+        else {
+            snprintf(line, sizeof(line), "CAM f14=%6d f16=%6d f18=%6d yaw=%6d seq=%u | cam=(%.1f, %.1f, %.1f) camYawDeg=%.1f",
+                pose.f14, pose.f16, pose.f18, pose.yaw, pose.frameSeq,
+                camX, camY, camZ, camYaw * 57.29578f);
+        }
+        telemetrySink(line);
+    }
+
     void XRContext::setFollowInjecting(bool injecting) {
         if (injecting) {
             // A few workloads of grace covers the input->render pipeline lag.
