@@ -467,11 +467,13 @@ namespace RT64 {
         }
 
         const std::lock_guard<std::mutex> lock(quadMutex);
+        // Retire (do not destroy) the replaced spaces: the compositor may
+        // still reference them from an in-flight frame.
         if (quadSpace != XR_NULL_HANDLE) {
-            xrDestroySpace(quadSpace);
+            retiredSpaces.emplace_back(quadSpace, frameLoopCounter);
         }
         if (anchorSpace != XR_NULL_HANDLE) {
-            xrDestroySpace(anchorSpace);
+            retiredSpaces.emplace_back(anchorSpace, frameLoopCounter);
         }
         quadSpace = newQuadSpace;
         anchorSpace = newAnchorSpace;
@@ -1044,6 +1046,16 @@ namespace RT64 {
 
     void XRContext::frameLoop() {
         while (!quitRequested) {
+            frameLoopCounter++;
+
+            // Drain retired spaces once no in-flight frame can reference them.
+            for (size_t i = retiredSpaces.size(); i > 0; i--) {
+                if ((frameLoopCounter - retiredSpaces[i - 1].second) > 5) {
+                    xrDestroySpace(retiredSpaces[i - 1].first);
+                    retiredSpaces.erase(retiredSpaces.begin() + (i - 1));
+                }
+            }
+
             pollEvents();
 
             if (!sessionRunning) {
@@ -1241,6 +1253,11 @@ namespace RT64 {
         destroyQuadSwapchain();
         destroyStereoSwapchain();
 #   endif
+
+        for (auto &retired : retiredSpaces) {
+            xrDestroySpace(retired.first);
+        }
+        retiredSpaces.clear();
 
         for (XrSpace *space : { &baseSpace, &viewSpace, &quadSpace, &anchorSpace }) {
             if (*space != XR_NULL_HANDLE) {

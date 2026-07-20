@@ -205,6 +205,12 @@ namespace RT64 {
         XrSpace viewSpace = XR_NULL_HANDLE;
         XrSpace quadSpace = XR_NULL_HANDLE;
         XrSpace anchorSpace = XR_NULL_HANDLE;
+        // Replaced spaces are retired, not destroyed: an in-flight composited
+        // frame may still reference them, and in-process runtimes (VDXR) can
+        // fault on immediate destruction. Drained a few frames later by the
+        // frame loop. Frame-loop-thread only.
+        std::vector<std::pair<XrSpace, uint64_t>> retiredSpaces;
+        uint64_t frameLoopCounter = 0;
 
         // Cinema quad swapchain. Handles are guarded by quadMutex against the
         // frame loop's xrEndFrame; the image cycle state is present-thread-only.
