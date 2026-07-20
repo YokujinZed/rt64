@@ -149,25 +149,49 @@ namespace RT64 {
             // projection stays in the N64 clip convention the RSP compute pass
             // expects. Stereo depth comes from the parallax of the two views.
             // Applied after interpolation so the offset rides the smooth camera.
-            if (p.eyeOverrideEnabled && (proj.type == Projection::Type::Perspective) && !workload.debuggerCamera.enabled) {
-                if (p.eyeLevelAnchor) {
-                    // Publish the level camera yaw for the follow controller
-                    // (pre-eye-offset, so both eye passes agree).
-                    if ((p.outCameraYaw != nullptr) || (p.outCameraPos != nullptr)) {
-                        const hlslpp::float4x4 invViewForYaw = hlslpp::inverse(viewMatrix);
-                        if (p.outCameraYaw != nullptr) {
-                            const float backX = float(invViewForYaw[2].x);
-                            const float backZ = float(invViewForYaw[2].z);
-                            if ((backX * backX + backZ * backZ) > 1e-8f) {
-                                *p.outCameraYaw = std::atan2(backX, backZ);
-                            }
-                        }
-                        if (p.outCameraPos != nullptr) {
-                            p.outCameraPos[0] = float(invViewForYaw[3].x);
-                            p.outCameraPos[1] = float(invViewForYaw[3].y);
-                            p.outCameraPos[2] = float(invViewForYaw[3].z);
+            // Camera observation, independent of VR: the follow controller and
+            // the first-person calibration both need the world camera, and
+            // sampling it here means a flat run can calibrate too. Several
+            // perspective projections share a frame and the ones that are not
+            // the scene camera carry an identity view, so the strongest
+            // translation wins rather than the last one processed.
+            if ((proj.type == Projection::Type::Perspective) && !workload.debuggerCamera.enabled &&
+                ((p.outCameraYaw != nullptr) || (p.outCameraPos != nullptr))) {
+                const hlslpp::float4x4 invViewForYaw = hlslpp::inverse(viewMatrix);
+                const float posX = float(invViewForYaw[3].x);
+                const float posY = float(invViewForYaw[3].y);
+                const float posZ = float(invViewForYaw[3].z);
+
+                if (p.outPerspectiveCount != nullptr) {
+                    *p.outPerspectiveCount += 1;
+                }
+
+                const float posLenSq = posX * posX + posY * posY + posZ * posZ;
+                float bestLenSq = 0.0f;
+                if (p.outCameraPos != nullptr) {
+                    bestLenSq = p.outCameraPos[0] * p.outCameraPos[0] +
+                                p.outCameraPos[1] * p.outCameraPos[1] +
+                                p.outCameraPos[2] * p.outCameraPos[2];
+                }
+
+                if (posLenSq >= bestLenSq) {
+                    if (p.outCameraPos != nullptr) {
+                        p.outCameraPos[0] = posX;
+                        p.outCameraPos[1] = posY;
+                        p.outCameraPos[2] = posZ;
+                    }
+                    if (p.outCameraYaw != nullptr) {
+                        const float backX = float(invViewForYaw[2].x);
+                        const float backZ = float(invViewForYaw[2].z);
+                        if ((backX * backX + backZ * backZ) > 1e-8f) {
+                            *p.outCameraYaw = std::atan2(backX, backZ);
                         }
                     }
+                }
+            }
+
+            if (p.eyeOverrideEnabled && (proj.type == Projection::Type::Perspective) && !workload.debuggerCamera.enabled) {
+                if (p.eyeLevelAnchor) {
 
                     // Head tracking: compose the eye offset against a LEVEL
                     // (gravity-aligned) frame at the game camera — position and
@@ -200,13 +224,20 @@ namespace RT64 {
                         outLevel = hlslpp::inverse(invLevel);
                     };
 
+                    // First person moves the eye forward (and vertically) in
+                    // the camera's own space, applied before the head offset
+                    // so looking around still pivots about the new eye point.
+                    const hlslpp::float4x4 fpDolly = p.fpEnabled
+                        ? matrixTranslation(hlslpp::float3(0.0f, p.fpHeight, p.fpForward))
+                        : hlslpp::float4x4::identity();
+
                     interop::float4x4 levelView;
                     levelViewOf(viewMatrix, levelView);
-                    viewMatrix = hlslpp::mul(levelView, p.eyeViewOffset);
+                    viewMatrix = hlslpp::mul(hlslpp::mul(levelView, fpDolly), p.eyeViewOffset);
 
                     interop::float4x4 prevLevelView;
                     levelViewOf(prevViewTransform, prevLevelView);
-                    prevViewTransform = hlslpp::mul(prevLevelView, p.eyeViewOffset);
+                    prevViewTransform = hlslpp::mul(hlslpp::mul(prevLevelView, fpDolly), p.eyeViewOffset);
                 }
                 else {
                     // Stereo without head tracking: pure IPD offset in the

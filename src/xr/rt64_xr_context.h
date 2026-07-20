@@ -56,6 +56,13 @@ namespace RT64 {
         uint64_t sampleCount = 0;
     };
 
+    // Calibration telemetry, deliberately independent of any XR session: the
+    // XR context does not exist without a headset, but first-person
+    // calibration must still be possible from a flat run.
+    void SetVRTelemetrySink(void (*sink)(const char *), bool enabled);
+    bool VRTelemetryEnabled();
+    void VRTelemetryLine(const char *line);
+
     // Raw player state from the game patch, published once per game frame.
     // Fields are unconverted: which of f14/f16/f18 is vertical, and the yaw
     // units, are calibration values resolved from telemetry.
@@ -153,6 +160,13 @@ namespace RT64 {
         void setHeadTrackingEnabled(bool enabled);
         bool isHeadTrackingEnabled() const;
         void setUnitsPerMeter(float units);
+        // First person: the game bakes its camera into the world matrices, so
+        // the eye is moved by dollying the view rather than rebuilding a
+        // camera. Offsets are in game units.
+        void setFirstPerson(bool enabled, float forward, float height);
+        bool isFirstPersonEnabled() const;
+        float firstPersonForward() const;
+        float firstPersonHeight() const;
         XREyeParams buildEyeParams(uint32_t eyeIndex) const; // 0 = left, 1 = right
         // Coherent both-eyes sample under a single lock: fills renderer-side
         // eye params for both eyes plus the pose metadata to echo at submit.
@@ -182,7 +196,7 @@ namespace RT64 {
         void setPoseTelemetryEnabled(bool enabled);
         // Host-provided line sink so calibration output lands in one file.
         void setTelemetrySink(void (*sink)(const char *));
-        void wl_logPoseTelemetry(float camX, float camY, float camZ, float camYaw);
+        void wl_logPoseTelemetry(float camX, float camY, float camZ, float camYaw, int perspectiveCount);
         // Residual gaze-vs-camera yaw in degrees for the input mux (NaN if
         // unknown); generation increments per workload update.
         float sampleHeadOffsetDegrees(uint64_t &outGeneration) const;
@@ -298,6 +312,9 @@ namespace RT64 {
         std::atomic<bool> stereoEnabled{ false };
         std::atomic<bool> headTrackingEnabled{ false };
         std::atomic<float> unitsPerMeter{ 100.0f };
+        std::atomic<bool> firstPersonEnabled{ false };
+        std::atomic<float> firstPersonForwardUnits{ 300.0f };
+        std::atomic<float> firstPersonHeightUnits{ 0.0f };
         std::atomic<float> renderedTanX{ 0.0f };
         std::atomic<float> renderedTanY{ 0.0f };
 

@@ -17,6 +17,25 @@
 #include <vector>
 
 namespace RT64 {
+    // Session-independent telemetry sink (see header).
+    static void (*g_vrTelemetrySink)(const char *) = nullptr;
+    static std::atomic<bool> g_vrTelemetryEnabled{ false };
+
+    void SetVRTelemetrySink(void (*sink)(const char *), bool enabled) {
+        g_vrTelemetrySink = sink;
+        g_vrTelemetryEnabled = enabled;
+    }
+
+    bool VRTelemetryEnabled() {
+        return g_vrTelemetryEnabled && (g_vrTelemetrySink != nullptr);
+    }
+
+    void VRTelemetryLine(const char *line) {
+        if (VRTelemetryEnabled()) {
+            g_vrTelemetrySink(line);
+        }
+    }
+
     static bool xrCheck(XrInstance instance, XrResult result, const char *what) {
         if (XR_SUCCEEDED(result)) {
             return true;
@@ -200,6 +219,24 @@ namespace RT64 {
         unitsPerMeter = units;
     }
 
+    void XRContext::setFirstPerson(bool enabled, float forward, float height) {
+        firstPersonEnabled = enabled;
+        firstPersonForwardUnits = forward;
+        firstPersonHeightUnits = height;
+    }
+
+    bool XRContext::isFirstPersonEnabled() const {
+        return firstPersonEnabled;
+    }
+
+    float XRContext::firstPersonForward() const {
+        return firstPersonForwardUnits.load();
+    }
+
+    float XRContext::firstPersonHeight() const {
+        return firstPersonHeightUnits.load();
+    }
+
     void XRContext::setRenderedFov(float tanX, float tanY) {
         renderedTanX = tanX;
         renderedTanY = tanY;
@@ -242,7 +279,7 @@ namespace RT64 {
     // Logs the raw player fields beside the rendered camera position/yaw so the
     // axis permutation, yaw units and eye height can be solved from a short
     // walk instead of guessed. Workload thread only.
-    void XRContext::wl_logPoseTelemetry(float camX, float camY, float camZ, float camYaw) {
+    void XRContext::wl_logPoseTelemetry(float camX, float camY, float camZ, float camYaw, int perspectiveCount) {
         if (!poseTelemetryEnabled) {
             return;
         }
@@ -259,13 +296,13 @@ namespace RT64 {
         const XRPlayerPose pose = samplePlayerPose();
         char line[256];
         if (!pose.valid) {
-            snprintf(line, sizeof(line), "CAM no-player cam=(%.1f, %.1f, %.1f) camYawDeg=%.1f",
-                camX, camY, camZ, camYaw * 57.29578f);
+            snprintf(line, sizeof(line), "CAM no-player cam=(%.1f, %.1f, %.1f) camYawDeg=%.1f persp=%d",
+                camX, camY, camZ, camYaw * 57.29578f, perspectiveCount);
         }
         else {
-            snprintf(line, sizeof(line), "CAM f14=%6d f16=%6d f18=%6d yaw=%6d seq=%u | cam=(%.1f, %.1f, %.1f) camYawDeg=%.1f",
+            snprintf(line, sizeof(line), "CAM f14=%6d f16=%6d f18=%6d yaw=%6d seq=%u | cam=(%.1f, %.1f, %.1f) camYawDeg=%.1f persp=%d",
                 pose.f14, pose.f16, pose.f18, pose.yaw, pose.frameSeq,
-                camX, camY, camZ, camYaw * 57.29578f);
+                camX, camY, camZ, camYaw * 57.29578f, perspectiveCount);
         }
         telemetrySink(line);
     }

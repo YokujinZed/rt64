@@ -325,10 +325,14 @@ namespace RT64 {
             projParams.aspectRatioScale = workloadConfig.aspectRatioScale;
             projParams.eyeOverrideEnabled = eyeParams.enabled;
             projParams.eyeLevelAnchor = eyeParams.levelAnchor;
+            projParams.fpEnabled = eyeParams.fpEnabled;
+            projParams.fpForward = eyeParams.fpForward;
+            projParams.fpHeight = eyeParams.fpHeight;
             float gameTanX = 0.0f;
             float gameTanY = 0.0f;
             float gameCameraYaw = std::numeric_limits<float>::quiet_NaN();
             float gameCameraPos[3] = { 0.0f, 0.0f, 0.0f };
+            int gamePerspectiveCount = 0;
             if (eyeParams.enabled) {
                 projParams.eyeViewOffset = eyeParams.viewOffset;
                 projParams.eyeTanLeft = eyeParams.tanLeft;
@@ -337,9 +341,16 @@ namespace RT64 {
                 projParams.eyeTanUp = eyeParams.tanUp;
                 projParams.outTanX = &gameTanX;
                 projParams.outTanY = &gameTanY;
+            }
+#           ifdef RT64_XR_SUPPORT
+            // Camera observation is requested even without the eye override or
+            // an XR session, so first-person calibration works in a flat run.
+            if ((ext.xrContext != nullptr) || VRTelemetryEnabled()) {
                 projParams.outCameraYaw = &gameCameraYaw;
                 projParams.outCameraPos = gameCameraPos;
+                projParams.outPerspectiveCount = &gamePerspectiveCount;
             }
+#           endif
             projectionProcessor.process(projParams);
 #           ifdef RT64_XR_SUPPORT
             // Tell the XR layer the game's FOV so the projection layer echoes
@@ -350,7 +361,19 @@ namespace RT64 {
             // And the level camera yaw for the follow controller.
             if (eyeParams.enabled && eyeParams.levelAnchor && (ext.xrContext != nullptr)) {
                 ext.xrContext->setRenderedCameraYaw(gameCameraYaw);
-                ext.xrContext->wl_logPoseTelemetry(gameCameraPos[0], gameCameraPos[1], gameCameraPos[2], gameCameraYaw);
+            }
+            // Camera-only telemetry line, emitted with no XR session required;
+            // the player line is written by the host and correlated by log
+            // order. ~1 Hz to stay readable.
+            if (VRTelemetryEnabled() && (gamePerspectiveCount > 0)) {
+                static uint64_t camTelemetryCounter = 0;
+                if ((camTelemetryCounter++ % 60) == 0) {
+                    char line[192];
+                    snprintf(line, sizeof(line), "CAM pos=(%.1f, %.1f, %.1f) yawDeg=%.1f persp=%d",
+                        gameCameraPos[0], gameCameraPos[1], gameCameraPos[2],
+                        gameCameraYaw * 57.29578f, gamePerspectiveCount);
+                    VRTelemetryLine(line);
+                }
             }
 #           endif
             projectionProcessor.upload(projParams);
@@ -1226,13 +1249,23 @@ namespace RT64 {
                             // Right eye first into its dedicated target; when it
                             // is done, everything the left frame's counters
                             // guarantee applies to it as well.
+                            const bool fpActive = ext.xrContext->isFirstPersonEnabled();
+                            const float fpForward = ext.xrContext->firstPersonForward();
+                            const float fpHeight = ext.xrContext->firstPersonHeight();
+
                             EyeRenderParams rightParams = toEyeRenderParams(rightXr);
                             rightParams.levelAnchor = trackingActive;
+                            rightParams.fpEnabled = fpActive;
+                            rightParams.fpForward = fpForward;
+                            rightParams.fpHeight = fpHeight;
                             threadRenderFrame(curFrame, prevFrame, workloadConfig, workload.debuggerRenderer, workload.debuggerCamera, curFrameWeight, prevFrameWeight, deltaTimeMs,
                                 interpolationTargetKey, interpolationTargetFbPairIndex, rightEyeTargets[frame].get(), 0x100 + frame, velocityUploaderUsed, false, tileInterpolationUsed, lookAtInterpolationUsed,
                                 rightParams);
                             eyeParams = toEyeRenderParams(leftXr);
                             eyeParams.levelAnchor = trackingActive;
+                            eyeParams.fpEnabled = fpActive;
+                            eyeParams.fpForward = fpForward;
+                            eyeParams.fpHeight = fpHeight;
                         }
                     }
                     // Stereo bring-up aid: RT64_XR_DEBUG_EYE=0|1 renders the

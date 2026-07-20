@@ -58,6 +58,9 @@ namespace RT64 {
         struct EyeRenderParams {
             bool enabled = false;
             bool levelAnchor = false; // compose against a gravity-aligned camera frame (head tracking)
+            bool fpEnabled = false;   // dolly the eye to the player's head (first person)
+            float fpForward = 0.0f;
+            float fpHeight = 0.0f;
             hlslpp::float4x4 viewOffset;
             float tanLeft = -1.0f;
             float tanRight = 1.0f;

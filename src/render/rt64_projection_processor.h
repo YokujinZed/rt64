@@ -30,6 +30,13 @@ namespace RT64 {
             // LEVEL camera frame (game camera position/yaw, gravity-aligned)
             // so head rotations happen about true world axes.
             bool eyeLevelAnchor = false;
+            // First person: dolly the eye along the game camera's own axes to
+            // sit at the player's head. The game bakes its camera into the
+            // world matrices (its view matrix is identity), so there is no
+            // camera to replace — moving the view is the correct lever.
+            bool fpEnabled = false;
+            float fpForward = 0.0f;
+            float fpHeight = 0.0f;
             hlslpp::float4x4 eyeViewOffset;
             float eyeTanLeft = -1.0f;
             float eyeTanRight = 1.0f;
@@ -44,8 +51,12 @@ namespace RT64 {
             // the head-follow controller. Written when eyeLevelAnchor.
             float *outCameraYaw = nullptr;
             // Output: the level camera's world position (game units), used to
-            // calibrate the player-pose axis mapping for first person.
+            // calibrate the player-pose axis mapping for first person. The
+            // sample with the largest translation wins, so HUD/effect
+            // projections carrying an identity view cannot mask the world
+            // camera (perspective projections are not all the scene camera).
             float *outCameraPos = nullptr; // float[3]
+            int *outPerspectiveCount = nullptr;
         };
 
         ProjectionProcessor();
