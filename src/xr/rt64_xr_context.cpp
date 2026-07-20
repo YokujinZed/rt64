@@ -221,6 +221,13 @@ namespace RT64 {
         renderedCameraYaw = yawRadians;
     }
 
+    void XRContext::setFollowInjecting(bool injecting) {
+        if (injecting) {
+            // A few workloads of grace covers the input->render pipeline lag.
+            followInjectionGrace = 6;
+        }
+    }
+
     void XRContext::wl_updateYawTransfer() {
         if (!followTransferEnabled || !headTrackingEnabled || !isStereoEnabled()) {
             followPrevCameraYaw = std::numeric_limits<float>::quiet_NaN();
@@ -239,10 +246,18 @@ namespace RT64 {
             return;
         }
 
-        if (!std::isnan(followPrevCameraYaw)) {
+        // Transfer only rotation observed while the follow controller was (or
+        // just was) injecting; the player's own turns rotate the world like
+        // flat play. The grace window absorbs the input->render pipeline lag.
+        const int grace = followInjectionGrace.load();
+        if (grace > 0) {
+            followInjectionGrace = grace - 1;
+        }
+
+        if (!std::isnan(followPrevCameraYaw) && (grace > 0)) {
             const float delta = wrapPi(cameraYaw - followPrevCameraYaw);
-            // Rotations larger than any camera motion injection could cause in
-            // one workload are camera cuts: don't transfer, re-anchor instead.
+            // Rotations larger than any injection could cause in one workload
+            // are camera cuts: don't transfer, re-anchor instead.
             constexpr float cutThreshold = 0.35f; // ~20 degrees
             if (std::abs(delta) < cutThreshold) {
                 yawOffset = wrapPi(yawOffset.load() + followTransferSign.load() * delta);

@@ -155,6 +155,10 @@ namespace RT64 {
         // the camera catches up to the gaze. Workload-thread only (wl_*).
         void setFollowTransfer(bool enabled, float transferSign);
         void setRenderedCameraYaw(float yawRadians); // NaN = unknown this frame
+        // The input mux reports while it is actively injecting camera turns;
+        // only rotation observed during (or shortly after) injection is
+        // transferred, so the player's own turns rotate the world normally.
+        void setFollowInjecting(bool injecting);
         void wl_updateYawTransfer();
         // Residual gaze-vs-camera yaw in degrees for the input mux (NaN if
         // unknown); generation increments per workload update.
@@ -279,6 +283,7 @@ namespace RT64 {
         std::atomic<bool> yawOffsetResetPending{ false };
         std::atomic<float> headOffsetResidualDeg{ std::numeric_limits<float>::quiet_NaN() };
         std::atomic<uint64_t> headOffsetGeneration{ 0 };
+        std::atomic<int> followInjectionGrace{ 0 };
         float followPrevCameraYaw = std::numeric_limits<float>::quiet_NaN(); // workload thread only
 
         std::thread frameThread;
